@@ -28,6 +28,11 @@ const loading=async()=>{
  await page.getByRole('status').filter({hasText:'家計簿を読み込んでいます…'}).waitFor();
 };
 const resolve=()=>page.evaluate(()=>globalThis.__resolveStage());
+const registration=async()=>{
+ await page.getByRole('tab',{name:'レシート',exact:true}).waitFor();
+ assert.equal(await page.locator('[data-page=register]').getAttribute('aria-current'),'page');
+ assert.equal(await page.getByRole('tab',{name:'レシート',exact:true}).getAttribute('aria-selected'),'true');
+};
 try{
  await page.goto(process.env.HOUSEHOLD_PREVIEW_URL||'http://127.0.0.1:4283');
  await page.getByRole('button',{name:'Googleでログイン',exact:true}).waitFor();
@@ -53,14 +58,16 @@ try{
   }
   await resolve();
  }
- await page.getByText('今月の残り',{exact:true}).waitFor();
+ await registration();
  assert.equal(await page.locator('#main').getAttribute('aria-busy'),'false');
  assert.equal(await page.locator('#navigation').isVisible(),true);
  assert.equal(await page.getByRole('heading',{name:'読み込み中'}).count(),0);
+ await page.getByRole('button',{name:'ホーム',exact:true}).click();
+ await page.getByText('今月の残り',{exact:true}).waitFor();
  await page.reload();
  await stage('restore');await loading();assert.equal(await page.locator('#navigation').isVisible(),false);
  await resolve();await stage('load');await loading();await resolve();
- await page.getByText('今月の残り',{exact:true}).waitFor();
+ await registration();
  const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('household.session.v1')));
  assert.deepEqual(Object.keys(saved).sort(),['expiresAt','session','target']);
  assert.equal(saved.session,'a'.repeat(64));
@@ -103,7 +110,7 @@ try{
  await page.addInitScript(()=>Object.defineProperty(window,'localStorage',{get(){throw new DOMException('Storage unavailable','SecurityError');}}));
  await page.reload();await page.getByRole('button',{name:'Googleでログイン',exact:true}).click();
  for(const name of ['prepare','exchange','load']){await stage(name);await loading();await resolve();}
- await page.getByText('今月の残り',{exact:true}).waitFor();
+ await registration();
  await page.reload();await page.getByRole('heading',{name:'ログイン',exact:true}).waitFor();
  assert.deepEqual(failures,[]);
  console.log('PASS: staged login errors/loading; reload restores and reloads ledger; bounded session only; local expiry and server denials clear storage; logout wins over prepare/exchange/load/restore and reload; storage unavailable login; no page errors. Local fixtures only.');

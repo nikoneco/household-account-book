@@ -45,6 +45,9 @@ try {
   await page.getByText('Google連携の準備が必要です。',{exact:false}).waitFor();
   await page.screenshot({path:path.join(output,'01-setup-mobile.png'),fullPage:true});
   await click('サンプルで試す');
+  assert.equal(await page.locator('[data-page=register]').getAttribute('aria-current'),'page');
+  assert.equal(await page.getByRole('tab',{name:'レシート',exact:true}).getAttribute('aria-selected'),'true');
+  await click('ホーム');
   await page.locator('.ledger-main').waitFor();
   assert.equal(await page.locator('.big-money').innerText(),'¥0');
   assert.equal(await page.evaluate(async()=>(await globalThis.__householdTest.transport().load()).revision),0,'Empty month must not cause a save');
@@ -325,6 +328,9 @@ try {
   await page.setViewportSize({width:390,height:844});
   await page.screenshot({path:path.join(output,'09-saving-funded-example.png'),fullPage:true});
   await click('ログアウト');await click('サンプルで試す');
+  assert.equal(await page.locator('[data-page=register]').getAttribute('aria-current'),'page');
+  assert.equal(await page.getByRole('tab',{name:'レシート',exact:true}).getAttribute('aria-selected'),'true');
+  await click('ホーム');
   assert.equal(await page.locator('.big-money').innerText(),'¥0');
   assert.equal(await page.getByText('炊飯器',{exact:true}).count(),0);
   assert.deepEqual(failures,[]);

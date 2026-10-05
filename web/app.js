@@ -10,7 +10,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp
 const today = () => new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const monthLabel = value => `${Number(value.slice(0,4))}年${Number(value.slice(5,7))}月`;
 const savedTime = value => value ? new Intl.DateTimeFormat('ja-JP',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(value)) : '未確認';
-let month = today().slice(0,7), page = 'home', tab = 'receipt', state = null, transport = null, config = null;
+let month = today().slice(0,7), page = 'register', tab = 'receipt', state = null, transport = null, config = null;
 let busy = false, loginLoading = false, pendingCommand = null, pendingSuccess = null, editing = null, settingEdit = null, loginPreparation = null, googleClient = null;
 let transferPreset = null, imageUrl = null, imageRequest = 0, authEpoch = 0, sessionRole = 'editor';
 let receiptUploads = [];
@@ -445,7 +445,7 @@ async function showImage(id,trigger) {
 async function logout() {
   receiptUploads=[];
   clearSession();authEpoch++;closeImage();const previous=transport;
-  state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='home';tab='receipt';busy=false;loginLoading=false;sessionRole='editor';
+  state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='register';tab='receipt';busy=false;loginLoading=false;sessionRole='editor';
   main.replaceChildren();document.querySelector('#pending').hidden=true;document.querySelector('#mode-note').hidden=true;clearMessages();
   transport=null;renderAuth();
   // Clear the UI/storage immediately even if the revocation request is slow/offline.
