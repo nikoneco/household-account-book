@@ -10,8 +10,8 @@ const today = () => new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:
 const monthLabel = value => `${Number(value.slice(0,4))}年${Number(value.slice(5,7))}月`;
 const savedTime = value => value ? new Intl.DateTimeFormat('ja-JP',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(value)) : '未確認';
 let month = today().slice(0,7), page = 'home', tab = 'expense', state = null, transport = null, config = null;
-let busy = false, pendingCommand = null, pendingSuccess = null, editing = null, settingEdit = null, loginPreparation = null, googleClient = null;
-let transferPreset = null, imageUrl = null, authEpoch = 0, sessionRole = 'editor';
+let busy = false, loginLoading = false, pendingCommand = null, pendingSuccess = null, editing = null, settingEdit = null, loginPreparation = null, googleClient = null;
+let transferPreset = null, imageUrl = null, imageRequest = 0, authEpoch = 0, sessionRole = 'editor';
 const materialized = new Set();
 const list = key => (state?.[key] || []).filter(item => key !== 'expenses' || !item.deleted);
 const withdrawalRemaining = expense => expense.amount - list('transfers').filter(t=>t.kind==='withdrawal'&&t.expenseId===expense.id).reduce((sum,t)=>sum+t.amount,0);
@@ -31,8 +31,14 @@ function formStart(id) { return `<form id="${id}"><div class="form-grid">`; }
 function formEnd(label='保存する',cancel='') { return `</div><div class="form-actions"><button type="submit">${label}</button>${cancel ? button(cancel,'キャンセル') : ''}</div></form>`; }
 
 function renderAuth() {
+  closeDetail();
   document.querySelector('#navigation').hidden = true;
   document.querySelector('#logout').hidden = true;
+  main.setAttribute('aria-busy',String(loginLoading));
+  if(loginLoading){
+    main.innerHTML='<section class="panel auth-panel"><h1>読み込み中</h1><p class="muted" role="status">家計簿を読み込んでいます…</p></section>';
+    return;
+  }
   main.innerHTML = `<section class="panel auth-panel"><h1>ログイン</h1><p class="muted">Googleアカウントでログインしてください。</p>${config ? `<button id="google-login" ${!googleClient ? 'disabled' : ''}>${googleClient ? 'Googleでログイン' : 'ログインを準備しています…'}</button>` : `<p class="notice">Google連携の準備が必要です。接続設定後にログインできます。</p>`}<div class="separator"><button id="demo-login" class="quiet">サンプルで試す</button><p class="hint">サンプルの入力は保存されず、終了すると消えます。</p></div></section>`;
 }
 
@@ -69,7 +75,7 @@ function expenseForm() {
         <label>固定費の実績<select name="planId">${settingOptions(fixedPlans,e.planId,'予定を選ばない')}</select></label>
         ${fixedChoice}
         <label class="full">どの積立で賄う？<select name="fundingSettingId">${settingOptions(savings(),e.fundingSettingId)}</select><span class="hint">指定だけでは取り崩しません。カードは請求月に、支払い確認後の取り崩しを記録します。</span></label>
-        <label class="full">メモ<textarea name="memo" maxlength="500">${esc(e.memo)}</textarea></label>
+        ${field('quantity','数量（任意）',e.quantity??'','number','min="1" step="1" inputmode="numeric"')}<p class="hint">金額は数量分の合計です。数量が不明なら空欄にします。</p><label class="full">メモ<textarea name="memo" maxlength="500">${esc(e.memo)}</textarea></label>
       </div>
     </details>
     ${editing?actions:''}
@@ -102,10 +108,46 @@ function renderReceipts() {
 function renderRegister() {
   return heading('登録','支出、積立の移動、レシートの記録')+`<div class="tabs" role="tablist" aria-label="登録の種類">${[['expense','支出'],['transfer','積立'],['receipt','レシート']].map(([key,label])=>`<button type="button" role="tab" aria-selected="${tab===key}" data-tab="${key}">${label}</button>`).join('')}</div>`+(tab==='expense'?expenseForm():tab==='transfer'?transferForm():receiptForm());
 }
+function historyGroups(expenses) {
+  const receipts = new Map(list('receipts').map(r=>[r.id,r]));
+  const groups = new Map();
+  for(const e of expenses){
+    const key=e.receiptId?`receipt:${e.receiptId}`:`expense:${e.id}`;
+    if(!groups.has(key))groups.set(key,{id:e.id,receipt:receipts.get(e.receiptId),items:[]});
+    groups.get(key).items.push(e);
+  }
+  return [...groups.values()];
+}
+function purchaseTitle(group) {return group.receipt?(group.receipt.merchant||'レシート'):(group.items[0].description||group.items[0].category);}
+function purchaseDate(group) {return group.receipt?.purchaseDate||group.items[0].useDate;}
+function expenseActions(e) {return `${button('edit-expense','編集',e.id)}${button('delete-expense','削除',e.id,'danger small')}`;}
 function renderHistory() {
   const expenses=list('expenses').filter(e=>e.accountingMonth===month).sort((a,b)=>b.useDate.localeCompare(a.useDate));
+  const groups=historyGroups(expenses);
   const transfers=list('transfers').filter(t=>t.month===month).sort((a,b)=>b.date.localeCompare(a.date));
-  return heading('履歴','計上月ごとの支出と積立の移動')+`<section class="panel"><div class="row-head"><h2>支出</h2><span class="muted">${expenses.length}件 · ${yen(expenses.reduce((n,e)=>n+e.amount,0))}</span></div>${expenses.length?expenses.map(e=>`<article class="entry"><div class="entry-date">${e.useDate.slice(8)}<small>${e.useDate.slice(5,7)}月</small></div><div><h3>${esc(e.description||e.category)}</h3><p class="muted">${esc(e.category)} · ${PAYMENTS[e.paymentMethod]}${e.fixed?' · 固定費':''}<br>利用日 ${esc(e.useDate)} ／ 計上月 ${esc(e.accountingMonth)}</p>${e.fundingSettingId?`<p class="muted">積立：${esc(savings().find(x=>x.id===e.fundingSettingId)?.name||'未設定')}</p>`:''}${e.memo?`<p class="muted">${esc(e.memo)}</p>`:''}</div><div class="entry-right"><strong>${yen(e.amount)}</strong><div class="entry-actions">${button('edit-expense','編集',e.id)}${button('delete-expense','削除',e.id,'danger small')}${e.receiptId?button('receipt-image','画像',e.receiptId):''}</div></div></article>`).join(''):'<div class="empty"><strong>この月の支出はありません。</strong>「登録」から、最初の記録を残しましょう。</div>'}</section><section class="panel"><h2>積立の移動</h2>${transfers.length?transfers.map(t=>`<article class="entry"><div class="entry-date">${t.date.slice(8)}<small>${t.date.slice(5,7)}月</small></div><div><h3>${esc(savings().find(s=>s.id===t.settingId)?.name||'積立')}</h3><p class="muted">${t.kind==='deposit'?'入金':'取り崩し'} · ${esc(t.date)}${t.expenseId?' · 購入に関連付け済み':''}</p>${t.memo?`<p class="muted">${esc(t.memo)}</p>`:''}</div><div class="entry-right"><strong>${yen(t.amount)}</strong>${button('delete-transfer','削除',t.id,'danger small')}</div></article>`).join(''):'<div class="empty">この月の入金・取り崩しはありません。</div>'}</section><section id="image-preview" hidden></section>`;
+  return heading('履歴','計上月ごとの支出と積立の移動')+`<section class="panel"><div class="row-head"><h2>支出</h2><span class="muted">${groups.length}件 · ${yen(expenses.reduce((n,e)=>n+e.amount,0))}</span></div>${groups.length?groups.map(group=>{
+    const e=group.items[0],date=purchaseDate(group),title=purchaseTitle(group);
+    const methods=[...new Set(group.items.map(item=>PAYMENTS[item.paymentMethod]))].join('・');
+    const fixedLabel=group.items.every(item=>item.fixed)?' · 固定費':group.items.some(item=>item.fixed)?' · 一部固定費':'';
+    return `<article class="entry history-entry"><button type="button" class="history-open" data-action="expense-detail" data-id="${esc(e.id)}" aria-label="${esc(dateLabel(date)+' '+title+'の詳細')}"><span class="entry-date">${date.slice(8)}<small>${date.slice(5,7)}月</small></span><span class="entry-copy"><span class="entry-title">${esc(title)}</span><span class="muted">${group.receipt?`${group.items.length}明細 · `:esc(e.category)+' · '}${methods}${fixedLabel}<br>利用日 ${esc(date)} ／ 計上月 ${esc(month)}</span></span><span class="entry-right"><strong>${yen(group.items.reduce((n,item)=>n+item.amount,0))}</strong><span class="detail-cue">詳細 ›</span></span></button>${!group.receipt?`<div class="entry-actions">${expenseActions(e)}</div>`:''}</article>`;
+  }).join(''):'<div class="empty"><strong>この月の支出はありません。</strong>「登録」から支出を記録できます。</div>'}</section><section class="panel"><h2>積立の移動</h2>${transfers.length?transfers.map(t=>`<article class="entry"><div class="entry-date">${t.date.slice(8)}<small>${t.date.slice(5,7)}月</small></div><div><h3>${esc(savings().find(s=>s.id===t.settingId)?.name||'積立')}</h3><p class="muted">${t.kind==='deposit'?'入金':'取り崩し'} · ${esc(t.date)}${t.expenseId?' · 購入に関連付け済み':''}</p>${t.memo?`<p class="muted">${esc(t.memo)}</p>`:''}</div><div class="entry-right"><strong>${yen(t.amount)}</strong>${button('delete-transfer','削除',t.id,'danger small')}</div></article>`).join(''):'<div class="empty">この月の入金・取り崩しはありません。</div>'}</section><section id="image-preview" hidden></section>`;
+}
+function closeDetail() {
+  const dialog=document.querySelector('#expense-detail');
+  if(!dialog)return;
+  closeImage();dialog.close();dialog.remove();
+}
+function showExpenseDetail(id) {
+  const expense=list('expenses').find(e=>e.id===id);if(!expense)return;
+  closeDetail();closeImage();
+  const items=expense.receiptId?list('expenses').filter(e=>e.receiptId===expense.receiptId):[expense];
+  const receipt=list('receipts').find(r=>r.id===expense.receiptId);
+  const group={receipt,items},date=purchaseDate(group),title=purchaseTitle(group);
+  const dialog=document.createElement('dialog');dialog.id='expense-detail';dialog.className='expense-detail';dialog.setAttribute('aria-labelledby','expense-detail-title');
+  dialog.innerHTML=`<div class="row-head detail-head"><div><p class="muted">${esc(dateLabel(date))}</p><h2 id="expense-detail-title">${esc(title)}</h2></div>${button('close-detail','閉じる')}</div><p class="hint">金額は数量分の合計です。</p><div class="purchase-items">${items.map(e=>`<article class="purchase-item" data-expense-id="${esc(e.id)}"><div class="row-head"><h3>${esc(e.description||e.category)}</h3><strong class="number">${yen(e.amount)}</strong></div><p class="muted">${esc(e.category)}${e.quantity!=null?' × '+e.quantity:' · 数量未確認'} · ${PAYMENTS[e.paymentMethod]}${e.fixed?' · 固定費':''}</p><p class="muted">利用日 ${esc(e.useDate)} ／ 計上月 ${esc(e.accountingMonth)}</p>${e.fundingSettingId?`<p class="muted">積立：${esc(savings().find(x=>x.id===e.fundingSettingId)?.name||'未設定')}</p>`:''}${e.memo?`<p class="muted">${esc(e.memo)}</p>`:''}${sessionRole==='editor'?`<div class="entry-actions">${expenseActions(e)}</div>`:''}</article>`).join('')}</div><div class="account-line emphasis"><span>購入合計</span><strong>${yen(items.reduce((n,e)=>n+e.amount,0))}</strong></div>${items.some(e=>e.accountingMonth!==month)?`<p class="hint">${esc(monthLabel(month))}に計上：${yen(items.filter(e=>e.accountingMonth===month).reduce((n,e)=>n+e.amount,0))}。履歴の合計は表示月の明細だけです。</p>`:''}${receipt?`<div class="form-actions">${button('receipt-image','レシート画像を見る',receipt.id)}</div>`:''}`;
+  dialog.addEventListener('cancel',event=>{event.preventDefault();closeDetail();});
+  dialog.addEventListener('click',event=>{if(event.target===dialog){const rect=dialog.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)closeDetail();}});
+  document.body.append(dialog);dialog.showModal();
 }
 function settingForm() {
   const s=settingEdit||{kind:'fixed',name:'',plannedAmount:'',category:'必要経費',paymentMethod:'bank',openingBalance:0,targetAmount:0,active:true};
@@ -117,6 +159,7 @@ function renderSettings() {
 }
 
 function render() {
+  closeDetail();
   if (!state) return renderAuth();
   closeImage();
   document.querySelector('#navigation').hidden=false;
@@ -172,7 +215,7 @@ async function ensureMonth() {
   if(captured<today().slice(0,7)||!missing){materialized.add(captured);return;}
   await mutate('materializeMonth',{month:captured},()=>{materialized.add(captured);render();});
 }
-function closeImage() { if(imageUrl){URL.revokeObjectURL(imageUrl);imageUrl=null;} }
+function closeImage(invalidate=true) { if(invalidate)imageRequest++;if(imageUrl){URL.revokeObjectURL(imageUrl);imageUrl=null;} }
 async function loadSession(demo=false) {
   const epoch=authEpoch;
   const loaded=await transport.load();
@@ -193,7 +236,7 @@ document.addEventListener('submit',async event=>{
   const p=getForm(form);
   if(form.id==='expense-form'){
     const plan=list('plans').find(x=>x.id===p.planId);
-    const payload={...editing,...p,id:editing?.id||crypto.randomUUID(),amount:num(p.amount),fixed:!!plan||p.fixed==='on',settingId:plan?.settingId||'',planId:plan?.id||'',fundingSettingId:p.fundingSettingId||'',manualEdited:!!editing};
+    const payload={...editing,...p,id:editing?.id||crypto.randomUUID(),quantity:p.quantity?Number(p.quantity):null,amount:num(p.amount),fixed:!!plan||p.fixed==='on',settingId:plan?.settingId||'',planId:plan?.id||'',fundingSettingId:p.fundingSettingId||'',manualEdited:!!editing};
     if(plan&&plan.month!==p.accountingMonth)delete payload.planId;
     await mutate('upsertExpense',payload,()=>{editing=null;render();if(payload.accountingMonth!==month)return `保存しました。計上月は${monthLabel(payload.accountingMonth)}です。`;});
   } else if(form.id==='income-form')await mutate('saveIncome',{month,amount:num(p.amount)});
@@ -252,9 +295,11 @@ document.addEventListener('click',async event=>{
   if(btn.dataset.page){switchPage(btn.dataset.page);return;}
   if(btn.dataset.tab){tab=btn.dataset.tab;render();return;}
   const action=btn.dataset.action,id=btn.dataset.id;
+  if(action==='expense-detail'){showExpenseDetail(id);return;}
+  if(action==='close-detail'){closeDetail();return;}
   if(action==='toggle-income'){const panel=document.querySelector('#income-edit');panel.hidden=!panel.hidden;if(!panel.hidden)panel.querySelector('input').focus();}
   if(action==='go-transfer'){tab='transfer';switchPage('register');}
-  if(action==='edit-expense'){editing={...list('expenses').find(e=>e.id===id)};tab='expense';switchPage('register');}
+  if(action==='edit-expense'){closeDetail();editing={...list('expenses').find(e=>e.id===id)};tab='expense';switchPage('register');}
   if(action==='cancel-expense'){editing=null;render();}
   if(action==='delete-expense' && confirm('この支出を削除しますか？'))await mutate('deleteExpense',{id});
   if(action==='delete-transfer' && confirm('この積立の移動を削除しますか？'))await mutate('deleteTransfer',{id});
@@ -264,7 +309,7 @@ document.addEventListener('click',async event=>{
   if(action==='funded-withdraw'){
     const e=list('expenses').find(x=>x.id===id);transferPreset={kind:'withdrawal',expenseId:id,settingId:e.fundingSettingId,amount:withdrawalRemaining(e),date:today()};tab='transfer';switchPage('register');message(e.paymentMethod==='card'?'カードの支払いが済んでいることを確認し、実際の移動日を入力して保存してください。':'実際に積立から支払った日と金額を確認して保存してください。');
   }
-  if(action==='receipt-image')await showImage(id);
+  if(action==='receipt-image')await showImage(id,btn);
   if(action==='close-image'){closeImage();btn.closest('.image-panel').remove();}
   if(action==='receipt-pending')await mutate('setReceiptStatus',{id,status:'pending',reason:''});
 });
@@ -285,20 +330,29 @@ async function uploadReceipt(form) {
     await mutate('uploadReceipt',{imageHash,fileName:file.name,mimeType:file.type,base64:btoa(raw)});
   }catch(error){message(error.message||'画像を保存できませんでした。画像は選択したままです。',true);}finally{setBusy(false);}
 }
-async function showImage(id) {
+async function showImage(id,trigger) {
   clearMessages();const epoch=authEpoch;
+  const target=document.querySelector('#expense-detail')||main;const request=++imageRequest;
+  const label=trigger?.textContent;
+  if(trigger){trigger.disabled=true;trigger.textContent='画像を読み込み中…';}
+  target.querySelector('.image-error')?.remove();
   try{
-    const result=await transport.receiptImage(id);if(epoch!==authEpoch)return;
-    closeImage();const parsed=/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(result.dataUrl||'');const base64=result.base64||result.data||parsed?.[2];const mime=result.mimeType||parsed?.[1]||'image/jpeg';
+    const result=await transport.receiptImage(id);if(epoch!==authEpoch||request!==imageRequest||!target.isConnected)return;
+    closeImage(false);const parsed=/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(result.dataUrl||'');const base64=result.base64||result.data||parsed?.[2];const mime=result.mimeType||parsed?.[1]||'image/jpeg';
     if(!['image/jpeg','image/png','image/webp'].includes(mime) || typeof base64!=='string')throw new Error('画像データを確認できませんでした。');
     const raw=atob(base64);const bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));imageUrl=URL.createObjectURL(new Blob([bytes],{type:mime}));
-    let host=document.querySelector('#image-preview');if(!host){host=document.createElement('section');host.id='image-preview';main.append(host);}host.hidden=false;
+    let host=target.querySelector('[data-image-preview],#image-preview');if(!host){host=document.createElement('section');host.dataset.imagePreview='';target.append(host);}host.hidden=false;
     host.innerHTML=`<div class="image-panel"><div class="row-head"><h2>レシート画像</h2>${button('close-image','閉じる')}</div><img class="private-image" src="${esc(imageUrl)}" alt="保存したレシート画像"></div>`;host.scrollIntoView({block:'start'});
-  }catch(error){message(error.message||'画像を取得できませんでした。',true);}
+  }catch(error){
+    if(epoch!==authEpoch||request!==imageRequest||!target.isConnected)return;
+    const text=error.message||'画像を取得できませんでした。';
+    if(target.id==='expense-detail'){const alert=document.createElement('p');alert.className='message error image-error';alert.setAttribute('role','alert');alert.textContent=text;target.append(alert);}
+    else message(text,true);
+  }finally{if(trigger?.isConnected){trigger.disabled=false;trigger.textContent=label;}}
 }
 async function logout() {
   authEpoch++;closeImage();const previous=transport;
-  state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='home';tab='expense';busy=false;sessionRole='editor';
+  state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='home';tab='expense';busy=false;loginLoading=false;sessionRole='editor';
   main.replaceChildren();document.querySelector('#pending').hidden=true;document.querySelector('#mode-note').hidden=true;clearMessages();
   transport=null;renderAuth();
   try{await previous?.logout?.();}catch{}finally{previous?.close?.();}
@@ -306,7 +360,7 @@ async function logout() {
 }
 async function initializeConfig() {
   const epoch=authEpoch;
-  config=null;googleClient=null;loginPreparation=null;
+  config=null;googleClient=null;loginPreparation=null;loginLoading=false;
   try{const response=await fetch('./runtime-config.json',{cache:'no-store'});if(response.ok)config=await response.json();}catch{}
   if(config?.mode!=='google' || !config.clientId || !config.bridgeUrl){config=null;renderAuth();return;}
   transport=createTransport(config);const loginTransport=transport;const loginConfig=config;renderAuth();
@@ -316,7 +370,10 @@ async function initializeConfig() {
     googleClient=google.accounts.oauth2.initCodeClient({client_id:loginConfig.clientId,scope:'openid email profile',ux_mode:'popup',callback:async result=>{
       if(epoch!==authEpoch)return;
       if(result.error){message('Googleログインが完了しませんでした。もう一度お試しください。',true);return;}
-      try{loginPreparation=await loginTransport.prepareLogin();const loginResult=await loginTransport.login(result.code,loginPreparation.state);if(epoch!==authEpoch)return;sessionRole=loginResult.role||'editor';await loadSession();}catch(error){message(error.message||'ログインできませんでした。',true);}
+      loginLoading=true;clearMessages();renderAuth();
+      try{loginPreparation=await loginTransport.prepareLogin();const loginResult=await loginTransport.login(result.code,loginPreparation.state);if(epoch!==authEpoch)return;sessionRole=loginResult.role||'editor';await loadSession();}
+      catch(error){if(epoch!==authEpoch)return;message(error.message||'ログインできませんでした。',true);}
+      finally{if(epoch===authEpoch){loginLoading=false;if(!state)renderAuth();}}
     },error_callback:()=>message('ログイン画面が閉じられました。もう一度ログインできます。',true)});
     renderAuth();
   }catch(error){if(epoch===authEpoch){message(error.message,true);renderAuth();}}

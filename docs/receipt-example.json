@@ -1,10 +1,12 @@
 {
   "receiptId": "REPLACE_WITH_UPLOADED_RECEIPT_ID",
-  "useDate": "2026-10-05",
+  "merchant": "ヨーカドー（架空の例）",
+  "useDate": "2026-10-04",
   "paymentMethod": "cash",
-  "total": 2400,
+  "total": 960,
   "lines": [
-    {"lineId": "food-1", "amount": 1500, "category": "食費", "description": "食品（架空の例）"},
-    {"lineId": "alcohol-1", "amount": 900, "category": "酒", "description": "酒（架空の例）"}
+    {"lineId": "item-001", "amount": 130, "quantity": 1, "category": "酒", "description": "レモンサワー"},
+    {"lineId": "item-002", "amount": 350, "quantity": 2, "category": "酒", "description": "一番搾り"},
+    {"lineId": "item-003", "amount": 480, "quantity": 1, "category": "食費", "description": "トンカツ"}
   ]
 }

@@ -387,6 +387,135 @@ test('mixed receipt import is atomic, preserves category and assigns billing mon
   assert.equal(b.state.expenses.length, 2);
 });
 
+test('one shopping receipt stores its merchant and individual products with quantities and line totals', () => {
+  const b = book();
+  receipt(b);
+  const result = b.run('importReceipt', mixed({
+    merchant: ' ヨーカドー ', useDate: '2026-10-04', paymentMethod: 'cash', total: 960,
+    lines: [
+      { lineId: 'lemon', description: 'レモンサワー', category: '酒', quantity: 1, amount: 130 },
+      { lineId: 'beer', description: '一番搾り', category: '酒', quantity: 2, amount: 350 },
+      { lineId: 'pork', description: 'トンカツ', category: '食費', quantity: 1, amount: 480 }
+    ]
+  }));
+  assert.equal(result.imported, true);
+  assert.equal(result.receipt.merchant, 'ヨーカドー');
+  assert.equal(result.receipt.purchaseDate, '2026-10-04');
+  assert.equal(result.receipt.expenseIds.length, 3);
+  assert.equal(b.state.receipts.length, 1);
+  assert.deepEqual(plain(result.expenses.map(row => [row.description, row.category, row.quantity, row.amount])), [
+    ['レモンサワー', '酒', 1, 130], ['一番搾り', '酒', 2, 350], ['トンカツ', '食費', 1, 480]
+  ]);
+  const summary = D.summarize(b.state, '2026-10');
+  assert.equal(summary.expenses, 960);
+  assert.equal(summary.categories['酒'], 480);
+  assert.equal(summary.categories['食費'], 480);
+  assert.deepEqual(Object.keys(summary.categories), ['食費', '酒', '趣味', '外食', '必要経費', 'その他']);
+  assert.equal(b.state.schemaVersion, 1);
+  const retried = b.run('importReceipt', mixed({ merchant: '違う店', quantity: 99 }));
+  assert.equal(retried.alreadyImported, true);
+  assert.equal(retried.receipt.merchant, 'ヨーカドー');
+  assert.equal(b.state.expenses.length, 3);
+  assert.deepEqual(plain(retried.receipt.expenseIds), plain(result.receipt.expenseIds));
+});
+
+test('unknown merchant and quantity remain absent and historical records still validate', () => {
+  const b = book();
+  receipt(b);
+  const result = b.run('importReceipt', mixed());
+  assert.equal(Object.hasOwn(result.receipt, 'merchant'), false);
+  assert.equal(result.expenses.every(row => !Object.hasOwn(row, 'quantity')), true);
+  const historical = plain(b.state);
+  const before = JSON.stringify(historical);
+  assert.equal(D.summarize(historical, '2026-12').expenses, 2200);
+  assert.equal(JSON.stringify(historical), before);
+  b.run('upsertExpense', { id: result.expenses[0].id, memo: '数量不明のまま訂正' });
+  assert.equal(Object.hasOwn(b.state.expenses[0], 'quantity'), false);
+  const blank = book();
+  receipt(blank);
+  assert.equal(Object.hasOwn(blank.run('importReceipt', mixed({ merchant: '   ' })).receipt, 'merchant'), false);
+});
+
+test('quantity may be edited, retained or cleared without changing an expense line total', () => {
+  const b = book();
+  expense(b, { amount: 350, quantity: 2 });
+  assert.equal(D.summarize(b.state, '2026-10').expenses, 350);
+  b.run('upsertExpense', { id: 'expense', description: '一番搾り' });
+  assert.equal(b.state.expenses[0].quantity, 2);
+  b.run('upsertExpense', { id: 'expense', quantity: 3 });
+  assert.equal(b.state.expenses[0].quantity, 3);
+  assert.equal(b.state.expenses[0].amount, 350);
+  b.run('upsertExpense', { id: 'expense', quantity: null });
+  assert.equal(Object.hasOwn(b.state.expenses[0], 'quantity'), false);
+  assert.equal(D.summarize(b.state, '2026-10').expenses, 350);
+  b.run('upsertExpense', { id: 'expense', quantity: Number.MAX_SAFE_INTEGER });
+  assert.equal(b.state.expenses[0].quantity, Number.MAX_SAFE_INTEGER);
+  assert.equal(D.summarize(b.state, '2026-10').expenses, 350);
+  for (const quantity of [0, -1, 1.5, '2', true, Number.MAX_SAFE_INTEGER + 1]) {
+    b.attempt('upsertExpense', { id: 'expense', quantity });
+  }
+});
+
+test('invalid extracted quantities or merchant strings require review without partially importing', () => {
+  const cases = [
+    ...[0, -1, 1.5, '2', null, true, Number.MAX_SAFE_INTEGER + 1].map(quantity => ({
+      lines: [{ lineId: '1', amount: 1200, category: '食費', quantity: 1 }, { lineId: '2', amount: 1000, category: '酒', quantity }]
+    })),
+    ...['店'.repeat(121), '店\u0000名', 123, null].map(merchant => ({ merchant }))
+  ];
+  for (const patch of cases) {
+    const b = book();
+    receipt(b);
+    const result = b.run('importReceipt', mixed(patch));
+    assert.equal(result.needsReview, true, JSON.stringify(patch));
+    assert.equal(b.state.expenses.length, 0);
+    assert.equal(Object.hasOwn(result.receipt, 'purchaseDate'), false);
+    assert.equal(Object.hasOwn(result.receipt, 'merchant'), false);
+    assert.equal(result.receipt.expenseIds.length, 0);
+    assert.equal(b.run('importReceipt', mixed({ merchant: '店'.repeat(120) })).imported, true);
+  }
+  const b = book();
+  receipt(b);
+  b.run('importReceipt', mixed({ merchant: 'ヨーカドー', lines: [{ lineId: '1', amount: 2200, category: '食費', quantity: 2 }] }));
+  for (const quantity of [0, null, '2']) {
+    const stored = plain(b.state);
+    stored.expenses[0].quantity = quantity;
+    invalid(() => D.summarize(stored, '2026-12'));
+  }
+  const invalidMerchant = plain(b.state);
+  invalidMerchant.receipts[0].merchant = '店'.repeat(121);
+  invalid(() => D.summarize(invalidMerchant, '2026-12'));
+});
+
+test('receipt reanalysis preserves manually corrected and cleared quantities and deleted products', () => {
+  const b = book();
+  receipt(b);
+  const input = mixed({
+    merchant: 'ヨーカドー', total: 960,
+    lines: [
+      { lineId: '1', amount: 130, category: '酒', description: 'レモンサワー', quantity: 1 },
+      { lineId: '2', amount: 350, category: '酒', description: '一番搾り', quantity: 2 },
+      { lineId: '3', amount: 480, category: '食費', description: 'トンカツ', quantity: 1 }
+    ]
+  });
+  b.run('importReceipt', input);
+  const ids = plain(b.state.receipts[0].expenseIds);
+  b.run('upsertExpense', { id: ids[0], quantity: 3, manualEdited: false });
+  b.run('upsertExpense', { id: ids[1], quantity: null, manualEdited: false });
+  b.run('deleteExpense', { id: ids[2] });
+  b.run('setReceiptStatus', { receiptId: 'receipt', status: 'needsReview', reason: '再解析' });
+  const outcome = b.run('importReceipt', { ...input, merchant: '別の店', lines: input.lines.map(line => ({ ...line, quantity: 99 })) });
+  assert.equal(outcome.alreadyImported, true);
+  assert.equal(b.state.expenses.length, 3);
+  assert.equal(b.state.expenses[0].quantity, 3);
+  assert.equal(Object.hasOwn(b.state.expenses[1], 'quantity'), false);
+  assert.equal(b.state.expenses[2].deleted, true);
+  assert.equal(b.state.expenses.every(row => row.manualEdited), true);
+  assert.equal(b.state.receipts[0].merchant, 'ヨーカドー');
+  assert.deepEqual(plain(b.state.receipts[0].expenseIds), ids);
+  assert.equal(D.summarize(b.state, '2026-12').expenses, 480);
+});
+
 test('receipt purchase date comes only from printed date, independently of upload and manual corrections', () => {
   const b = book('2026-10-05T03:00:00.000Z');
   const uploadedAt = '2026-10-05T03:00:00.000Z';

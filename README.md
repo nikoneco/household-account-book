@@ -1,6 +1,6 @@
 # 家計簿
 
-主に妻が日々の入力・編集を行い、夫も入力・編集できるスマホ向け家計簿PWA。初期版はローカル実装で、公開・GAS反映・本番シート初期化は未実施です。
+主に妻が日々の入力・編集を行い、夫も入力・編集できるスマホ向け家計簿PWA。[公開家計簿](https://nikoneco.github.io/household-account-book/) はGoogleログインで利用します。GASと専用シートを接続済みです。家計情報とレシートは非公開です。
 
 ## 起動と確認
 
@@ -30,13 +30,13 @@ npm start
 
 静的PWAとGASの匿名通信ブリッジを分離し、GASがGoogleの認証コードを直接交換します。交換先から直接受け取ったID tokenの発行者・対象OAuth client・期限・許可アカウントを確認し、短期のアプリ専用セッションを発行します。ブラウザから渡されたJWTをそのまま信頼するAPIは設けません。
 
-Googleログインは [GISの認証コード方式](https://developers.google.com/identity/oauth2/web/guides/use-code-model) と [OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect) を基にしています。GAS通信は [HtmlService / google.script.run](https://developers.google.com/apps-script/guides/html/communication) の小さなiframeブリッジを通します。iframeの内側の送信元、origin、ランダムchannel、request IDを固定・照合します。この組合せの公開環境での実通信は、デプロイ後の確認が必要です。
+Googleログインは [GISの認証コード方式](https://developers.google.com/identity/oauth2/web/guides/use-code-model) と [OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect) を基にしています。GAS通信は [HtmlService / google.script.run](https://developers.google.com/apps-script/guides/html/communication) の小さなiframeブリッジを通します。iframeの内側の送信元、origin、ランダムchannel、request IDを固定・照合します。公開Chromeで実ログイン・明細保存・編集・削除・非公開画像保存と表示を確認済みです。
 
 `HOUSEHOLD_ALLOWED_EMAIL` にカンマ区切りで登録された家族は同じ家計簿を入力・編集できます。匿名と許可外アカウントの読み書きを拒否します。任意の閲覧専用アカウントは別プロパティに設定できます。公開するコードには実データ・対象シートやフォルダのID・メールアドレス・OAuth secretを含めません。ログイン情報と家計データはブラウザメモリだけに置き、Service Workerはアプリシェルだけを保存します。
 
-## 公開前に設定するもの
+## 接続設定と更新手順
 
-今は設定値のひな形と手順だけを用意します。以下の操作は公開確認を受けた後に行います。
+初回の公開と接続設定は実施済みです。以下は再構成時の手順です。既存の設定を推測で置換せず、対象とバックアップを確認します。
 
 1. Google CloudでWebアプリ用OAuth clientを作り、GISを呼ぶPWAのoriginを「承認済みJavaScript生成元」へ登録します。GitHub Pagesではoriginは `https://ユーザー名.github.io` で、リポジトリのパスを含めません。必要なscopeは `openid email profile` だけです。テスト公開中なら許可ユーザーも設定します。
 2. GASの「プロジェクトの設定 → スクリプト プロパティ」で次の値を入れます。
@@ -63,11 +63,19 @@ Googleログインは [GISの認証コード方式](https://developers.google.co
 
 6. 許可した家族それぞれの編集、第三者・匿名の拒否、ログアウト、公開PWAのiframe通信、非公開レシート画像を確認します。iPhone Safariとホーム画面からの起動は実機で確認します。
 
-`npm run build` は静的ファイルを `dist/`、GAS用コードを `.local/gas-build/` に出力するだけです。GitHub push、clasp push、デプロイ、Sheets初期化、スケジュール作成は実行しません。既存GASの取得時に作られた `.clasp.json` はバックアップ側を指すため、反映前に必ずrootDirと対象を確認します。
+`npm run build` は静的ファイルを `dist/`、GAS用コードを `.local/gas-build/` に出力するだけです。GitHub push、clasp push、デプロイ、Sheets初期化、スケジュール作成は実行しません。ignoredな `.clasp.json` のrootDirは `.local/gas-build/` を指します。反映前に対象とrootDirを確認します。
+
+更新はローカル検証・独立レビュー、GASのpushと既存デプロイ更新、生成したdistのgh-pagesブランチへのpush、Pagesのビルド成功、公開アセットの一致と実画面確認をそれぞれ行います。mainはソース保管用です。初期化は毎回行いません。
+
+セッションは画面メモリだけに保持するため、再読込・開き直しでは再ログインが必要です。保存済みの家計記録はSheetsに残ります。端末への永続的なログイン保存は未実装です。
+
+Google認証後の準備・コード交換・記録取得中は「読み込み中」を表示します。失敗時は理由とログインボタンへ戻ります。ローカルの段階別確認は `tests/login-ui.mjs` で行います。
 
 ## レシート
 
-初期版では画像保存と外部解析結果の取り込みまでを扱います。画像は認証後に非公開Driveへ保存し、SHA-256で重複を確認します。JPEG/PNG/WebPの8MB以下が対象です。HEIC等はJPEGなどへ変換してから登録します。
+画像は認証後に非公開Driveへ保存し、SHA-256で重複を確認します。JPEG/PNG/WebPの8MB以下が対象です。HEIC等はJPEGなどへ変換してから登録します。
+
+履歴はレシート1枚を購入日・店名・合計の1件にまとめ、開くと商品ごとの分類・数量・金額を表示します。金額は数量分の合計です。数量が不明なら補完しません。商品の編集、削除、元画像の確認に対応します。各商品の計上月を変更した場合、履歴は表示月の分だけを合計し、詳細には購入全体を表示します。交通系マネーの購入は現金と同じ扱いです。
 
 購入日はレシートに印字された日付です。撮影日・アップロード日・解析日で代用しません。印字された購入日は `purchaseDate`、保存日時は `uploadedAt`、各明細の利用日は `useDate` として分けます。日付・金額の欠落や合計不一致では明細を作らず要確認へ回します。混在レシートは分類ごとの行に分け、安定したlineIdを維持します。手修正や削除した明細を再解析で復元・上書きしません。
 
