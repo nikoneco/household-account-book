@@ -25,6 +25,11 @@ const paymentField = (value='cash') => `<label>支払方法<select name="payment
 const categoryField = (value='食費') => `<label>分類<select name="category">${options(CATEGORIES,value)}</select></label>`;
 function message(text, error = false) { const el = document.querySelector(error ? '#error' : '#message'); el.textContent = text; el.hidden = !text; }
 function clearMessages() { message(''); message('',true); }
+function sessionSaveNotice(result) {
+  if(result.saved)return;
+  const reasons={token:'ログイン情報の形式',number:'有効期限の形式',late:'有効期限切れ',too_far:'有効期限の上限',storage:'ブラウザの保存制限','storage-not-retained':'ブラウザの保存設定'};
+  message(`ログイン状態を保存できませんでした（${reasons[result.reason]||'保存の確認'}）。再読み込み時はログインが必要です。`,true);
+}
 function dateLabel(date) { return `${date.slice(5,7)}/${date.slice(8,10)}`; }
 function heading(title,caption) { return `<div class="page-head"><h1>${title}</h1><label class="month-field">表示する月<input id="month" type="month" value="${month}" required></label></div><p class="muted page-caption">${caption}</p>`; }
 function button(action,label,id='',cls='quiet small') { return `<button type="button" class="${cls}" data-action="${action}" data-id="${esc(id)}">${label}</button>`; }
@@ -377,7 +382,7 @@ async function initializeConfig() {
     try{
       const restored=await loginTransport.restore(saved);
       if(epoch!==authEpoch)return;
-      sessionRole=restored.role;saveSession(loginConfig,restored);await loadSession();
+      sessionRole=restored.role;const savedResult=saveSession(loginConfig,restored);await loadSession();if(epoch===authEpoch)sessionSaveNotice(savedResult);
     }catch(error){
       if(epoch!==authEpoch)return;
       if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code))clearSession();
@@ -393,7 +398,7 @@ async function initializeConfig() {
       if(epoch!==authEpoch)return;
       if(result.error){message('Googleログインが完了しませんでした。もう一度お試しください。',true);return;}
       loginLoading=true;clearMessages();renderAuth();
-      try{loginPreparation=await loginTransport.prepareLogin();if(epoch!==authEpoch)return;const loginResult=await loginTransport.login(result.code,loginPreparation.state);if(epoch!==authEpoch)return;sessionRole=loginResult.role||'editor';saveSession(loginConfig,loginResult);await loadSession();}
+      try{loginPreparation=await loginTransport.prepareLogin();if(epoch!==authEpoch)return;const loginResult=await loginTransport.login(result.code,loginPreparation.state);if(epoch!==authEpoch)return;sessionRole=loginResult.role||'editor';const savedResult=saveSession(loginConfig,loginResult);await loadSession();if(epoch===authEpoch)sessionSaveNotice(savedResult);}
       catch(error){if(epoch!==authEpoch)return;if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code))clearSession();message(error.message||'ログインできませんでした。',true);}
       finally{if(epoch===authEpoch){loginLoading=false;if(!state)renderAuth();}}
     },error_callback:()=>message('ログイン画面が閉じられました。もう一度ログインできます。',true)});

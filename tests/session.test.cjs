@@ -6,7 +6,7 @@ test('stored app session is bounded, target-scoped and excludes ledger/OAuth dat
  const api=await apiReady,items=new Map();
  globalThis.localStorage={getItem:key=>items.get(key)||null,setItem:(key,value)=>items.set(key,value),removeItem:key=>items.delete(key)};
  const valid={session:'a'.repeat(64),expiresAt:Date.now()+3500000};
- api.saveSession(config,{...valid,role:'editor',access_token:'oauth-fixture',expenses:[{amount:42}]});
+ assert.deepEqual(api.saveSession(config,{...valid,role:'editor',access_token:'oauth-fixture',expenses:[{amount:42}]}),{saved:true,reason:'stored'});
  const stored=JSON.parse(items.get(api.SESSION_STORAGE_KEY));
  assert.deepEqual(Object.keys(stored).sort(),['expiresAt','session','target']);
  assert.deepEqual(api.readSession(config),valid);
@@ -21,8 +21,25 @@ test('stored app session is bounded, target-scoped and excludes ledger/OAuth dat
 test('unavailable browser storage is nonfatal and failed removal uses a signed-out marker',async()=>{
  const api=await apiReady;
  Object.defineProperty(globalThis,'localStorage',{configurable:true,get(){throw Error('blocked');}});
- assert.equal(api.readSession(config),null);assert.doesNotThrow(()=>api.saveSession(config,{session:'a'.repeat(64),expiresAt:Date.now()+10000}));
+ assert.equal(api.readSession(config),null);assert.deepEqual(api.saveSession(config,{session:'a'.repeat(64),expiresAt:Date.now()+10000}),{saved:false,reason:'storage'});
  assert.doesNotThrow(()=>api.clearSession());delete globalThis.localStorage;
  let value='old';globalThis.localStorage={removeItem(){throw Error('denied');},setItem(_,next){value=next;},getItem(){return value;}};
  api.clearSession();assert.equal(value,'null');assert.equal(api.readSession(config),null);delete globalThis.localStorage;
+});
+test('save reports precise nonsecret reasons and detects discarded writes',async()=>{
+ const api=await apiReady,items=new Map();
+ globalThis.localStorage={getItem:key=>items.get(key)||null,setItem:(key,value)=>items.set(key,value),removeItem:key=>items.delete(key)};
+ const valid={session:'a'.repeat(64),expiresAt:Date.now()+3500000};
+ for(const [value,reason] of [[{...valid,session:'invalid'},'token'],[{...valid,expiresAt:String(valid.expiresAt)},'number'],[{...valid,expiresAt:1},'late'],[{...valid,expiresAt:Date.now()+3601500},'too_far']]){
+  const result=api.saveSession(config,value);
+  assert.deepEqual(result,{saved:false,reason});assert.equal(items.size,0);
+  assert.deepEqual(Object.keys(result).sort(),['reason','saved']);
+ }
+ // A slight server/client offset reproduces the current upper-bound rejection;
+ // this diagnostic test deliberately preserves that behavior pending real observation.
+ assert.equal(api.validSession({...valid,expiresAt:3600001},0),false);
+ assert.equal(api.validSession({...valid,expiresAt:3600000},0),true);
+ globalThis.localStorage={getItem:()=>null,setItem:()=>{},removeItem:()=>{}};
+ assert.deepEqual(api.saveSession(config,valid),{saved:false,reason:'storage-not-retained'});
+ delete globalThis.localStorage;
 });
