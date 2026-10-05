@@ -1,12 +1,14 @@
 // Only the opaque, short-lived app session is retained. Ledger/OAuth data stays in memory.
 export const SESSION_STORAGE_KEY = 'household.session.v1';
 const MAX_SESSION_MS = 60 * 60 * 1000;
+// Local filtering tolerates clock skew; the server still enforces its original expiry.
+const CLOCK_SKEW_MS = 5 * 60 * 1000;
 const target = config => `${config.bridgeUrl}|${config.clientId}`;
 function rejectionReason(value, now = Date.now()) {
   if (!value || typeof value.session !== 'string' || !/^[a-f0-9]{64}$/.test(value.session)) return 'token';
   if (!Number.isSafeInteger(value.expiresAt)) return 'number';
   if (value.expiresAt <= now) return 'late';
-  if (value.expiresAt > now + MAX_SESSION_MS) return 'too_far';
+  if (value.expiresAt > now + MAX_SESSION_MS + CLOCK_SKEW_MS) return 'too_far';
   return null;
 }
 export function validSession(value, now = Date.now()) {
