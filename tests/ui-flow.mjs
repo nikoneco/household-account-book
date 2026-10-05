@@ -156,9 +156,12 @@ try {
   assert.equal(await page.locator('.saving-row').filter({hasText:'家電積立'}).locator('strong.number').innerText(),'¥55,000');
   await click('支払い確認・取り崩し');
   f=form('transfer-form');assert.equal(await f.locator('[name=amount]').inputValue(),'12000');
+  assert.equal(await page.locator('#transfer-current-balance').innerText(),'¥55,000');
+  assert.equal(await page.locator('#transfer-after-balance').innerText(),'¥43,000');
   const linkedCardId=await f.locator('[name=expenseId]').inputValue();
   assert.ok(linkedCardId,'Initial withdrawal remains linked to purchase');
   await f.locator('[name=amount]').fill('4000');
+  assert.equal(await page.locator('#transfer-after-balance').innerText(),'¥51,000');
   await f.locator('[name=date]').fill('2026-10-05');
   await f.getByRole('button',{name:'実際の移動を保存'}).click();await waitSaved();
   await click('ホーム');
@@ -172,6 +175,8 @@ try {
   await f.locator('[name=amount]').fill('1');
   await f.locator('[name=expenseId]').selectOption(linkedCardId);
   assert.equal(await f.locator('[name=amount]').inputValue(),'8000','Ordinary purchase selection also uses remaining amount');
+  assert.equal(await page.locator('#transfer-current-balance').innerText(),'¥51,000');
+  assert.equal(await page.locator('#transfer-after-balance').innerText(),'¥43,000');
   assert.equal(await f.locator('[name=kind]').inputValue(),'withdrawal');
   await f.locator('[name=date]').fill('2026-10-05');
   await f.getByRole('button',{name:'実際の移動を保存'}).click();await waitSaved();
@@ -262,6 +267,12 @@ try {
   await page.getByText('積立で賄う購入の取り崩しが',{exact:false}).waitFor();
   await click('取り崩しを記録');
   f=form('transfer-form');
+  assert.equal(await page.locator('#transfer-current-balance').innerText(),'¥500,000');
+  assert.equal(await page.locator('#transfer-after-balance').innerText(),'¥0');
+  await f.locator('[name=amount]').fill('500001');
+  assert.equal(await page.locator('#transfer-after-balance').innerText(),'¥-1');
+  assert.equal(await page.locator('#transfer-after-balance.negative').count(),1);
+  await f.locator('[name=amount]').fill('500000');
   assert.equal(await f.locator('[name=amount]').inputValue(),'500000');
   assert.equal(await f.locator('[name=expenseId]').inputValue(),'sample-purchase');
   await f.locator('[name=date]').fill('2026-10-05');

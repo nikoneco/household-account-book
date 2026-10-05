@@ -79,7 +79,19 @@ function expenseForm() {
 function transferForm() {
   const p=transferPreset||{};
   const eligible=list('expenses').filter(e=>e.accountingMonth===month && withdrawalRemaining(e)>0);
-  return `<section class="panel"><h2>積立の入金・取り崩し</h2>${!savings().length?'<p class="notice">「毎月の設定」で積立を追加してください。</p>':''}${formStart('transfer-form')}<label>積立<select name="settingId" required>${settingOptions(savings(),p.settingId,'積立を選ぶ')}</select></label><label>記録の種類<select name="kind">${options(['deposit','withdrawal'],p.kind||'deposit',k=>k==='deposit'?'入金':'取り崩し')}</select></label>${field('date','実際に移動した日',p.date||today(),'date',`required max="${today()}"`)}${moneyField('amount','金額（円）',p.amount||'','required min="1"')}<label class="full">取り崩しに対応する支出<select name="expenseId"><option value="">購入と関連付けない</option>${eligible.map(e=>`<option value="${esc(e.id)}"${e.id===p.expenseId?' selected':''}>${dateLabel(e.useDate)} ${esc(e.description||e.category)} · ${yen(withdrawalRemaining(e))}（${PAYMENTS[e.paymentMethod]}・取り崩し残額）</option>`).join('')}</select><span class="hint">カードは表示中の請求月の購入を選び、支払い確認後に記録します。</span></label><label class="full">メモ<textarea name="memo" maxlength="500">${esc(p.memo)}</textarea></label>${formEnd('実際の移動を保存')}<p class="hint">取り崩しは資金の移動です。購入の支出をもう一度加算しません。未来の日付は登録できません。</p></section>`;
+  return `<section class="panel"><h2>積立の入金・取り崩し</h2>${!savings().length?'<p class="notice">「毎月の設定」で積立を追加してください。</p>':''}${formStart('transfer-form')}<label>積立<select name="settingId" required>${settingOptions(savings(),p.settingId,'積立を選ぶ')}</select></label><div class="full" id="transfer-balance" aria-live="polite"><div class="account-line"><span>積立の残金</span><strong id="transfer-current-balance">積立を選んでください</strong></div><div class="account-line"><span>今回の移動後の残金</span><strong id="transfer-after-balance">—</strong></div></div><label>記録の種類<select name="kind">${options(['deposit','withdrawal'],p.kind||'deposit',k=>k==='deposit'?'入金':'取り崩し')}</select></label>${field('date','実際に移動した日',p.date||today(),'date',`required max="${today()}"`)}${moneyField('amount','金額（円）',p.amount||'','required min="1"')}<label class="full">取り崩しに対応する支出<select name="expenseId"><option value="">購入と関連付けない</option>${eligible.map(e=>`<option value="${esc(e.id)}"${e.id===p.expenseId?' selected':''}>${dateLabel(e.useDate)} ${esc(e.description||e.category)} · ${yen(withdrawalRemaining(e))}（${PAYMENTS[e.paymentMethod]}・取り崩し残額）</option>`).join('')}</select><span class="hint">カードは表示中の請求月の購入を選び、支払い確認後に記録します。</span></label><label class="full">メモ<textarea name="memo" maxlength="500">${esc(p.memo)}</textarea></label>${formEnd('実際の移動を保存')}<p class="hint">取り崩しは資金の移動です。購入の支出をもう一度加算しません。未来の日付は登録できません。</p></section>`;
+}
+function updateTransferBalance() {
+  const form=document.querySelector('#transfer-form');
+  if(!form)return;
+  const item=savings().find(item=>item.id===form.elements.settingId.value);
+  const current=document.querySelector('#transfer-current-balance'),after=document.querySelector('#transfer-after-balance');
+  if(!item){current.textContent='積立を選んでください';after.textContent='—';after.classList.remove('negative');return;}
+  const balance=D.balance(state,item.id),amount=Number(form.elements.amount.value||0);
+  current.textContent=yen(balance);
+  const projected=balance+(form.elements.kind.value==='withdrawal'?-amount:amount);
+  after.textContent=Number.isSafeInteger(projected)?yen(projected):'金額を確認してください';
+  after.classList.toggle('negative',projected<0);
 }
 function receiptForm() {
   return `<section class="panel"><h2>レシート画像を保存</h2><p class="muted">レシートに印字された購入日が読める写真を選んでください。</p><form id="receipt-form"><label>レシート画像<input name="image" type="file" accept="image/jpeg,image/png,image/webp" required></label><p class="hint">JPEG・PNG・WebP、8MBまで。</p><div class="form-actions"><button type="submit">画像を保存</button></div></form></section><section class="panel"><h2>保存したレシート</h2><p class="hint">購入日はレシートで確認できた日付です。保存日時とは別に表示します。</p>${renderReceipts()}</section>`;
@@ -118,6 +130,7 @@ function render() {
     document.querySelector('#mode-note').hidden=false;document.querySelector('#mode-note').textContent='閲覧のみ';
   }
   document.querySelectorAll('[data-page]').forEach(el=>{if(el.dataset.page===page)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
+  updateTransferBalance();
   setBusy(busy);
 }
 function setBusy(value) {
@@ -196,6 +209,8 @@ document.addEventListener('submit',async event=>{
     await mutate('savePlan',{...plan,plannedAmount:num(p.plannedAmount),memo:p.memo});
   } else if(form.id==='receipt-form')await uploadReceipt(form);
 });
+document.addEventListener('input',event=>{if(event.target.closest('#transfer-form'))updateTransferBalance();});
+
 document.addEventListener('change',async event=>{
   const el=event.target;
   if(el.id==='month'){
@@ -221,6 +236,7 @@ document.addEventListener('change',async event=>{
   if(el.closest('#transfer-form') && el.name==='expenseId'){
     const expense=list('expenses').find(e=>e.id===el.value);if(expense){const f=el.form;f.elements.kind.value='withdrawal';f.elements.amount.value=withdrawalRemaining(expense);if(expense.fundingSettingId)f.elements.settingId.value=expense.fundingSettingId;}
   }
+  if(el.closest('#transfer-form'))updateTransferBalance();
 });
 document.addEventListener('click',async event=>{
   const homeLink=event.target.closest('.brand');if(homeLink&&state){event.preventDefault();if(!busy&&!pendingCommand)switchPage('home');return;}
