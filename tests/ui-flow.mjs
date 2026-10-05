@@ -59,9 +59,11 @@ try {
   await page.locator('.monthly-form').waitFor();
   f=form('setting-form');
   await f.locator('[name=name]').fill('家賃');
+  await f.locator('[name=paymentMethod]').selectOption('cash');
   await f.locator('[name=plannedAmount]').fill('70000');
   await f.getByRole('button',{name:'項目を追加'}).click();
-  await page.waitForFunction(()=>document.querySelectorAll('.monthly-form').length===2);
+  await page.waitForFunction(()=>document.querySelectorAll('.setting-row').length===2&&document.querySelector('#main').getAttribute('aria-busy')==='false');
+  assert.equal(await page.locator('.monthly-form').count(),1,'Monthly list contains savings only');
   await page.locator('.setting-row').filter({hasText:'家電積立'}).getByRole('button',{name:'編集',exact:true}).click();
   await form('setting-form').locator('[name=plannedAmount]').fill('11000');
   await form('setting-form').getByRole('button',{name:'設定を保存'}).click();await waitSaved();
@@ -79,7 +81,7 @@ try {
   await click('同じ内容で再試行');
   await waitSaved();
   assert.equal(await page.locator('.big-money').innerText(),'¥300,000');
-  await click('登録');
+  await click('登録');await page.getByRole('tab',{name:'支出',exact:true}).click();
   await page.locator('#month').fill('2026-09');
   let registration=form('expense-form');
   const todayDate=await page.evaluate(()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()));
@@ -100,7 +102,7 @@ try {
   await page.locator('.entry').filter({hasText:'今日の支出'}).waitFor();
   page.once('dialog',dialog=>dialog.accept());
   await page.locator('.entry').filter({hasText:'今日の支出'}).getByRole('button',{name:'削除',exact:true}).click();await waitSaved();
-  await page.locator('#month').fill('2026-10');await click('登録');
+  await page.locator('#month').fill('2026-10');await click('登録');await page.getByRole('tab',{name:'支出',exact:true}).click();
   await page.screenshot({path:path.join(output,'06-register-mobile.png'),fullPage:true});
   f=form('expense-form');
   await f.locator('[name=useDate]').fill('2026-10-03');
@@ -130,10 +132,10 @@ try {
   await f.getByRole('button',{name:'支出を保存'}).click();await waitSaved();
   await click('履歴');
   const rent=page.locator('.entry').filter({hasText:'家賃'});
-  await rent.getByText('必要経費 · 銀行 · 固定費',{exact:false}).waitFor();
+  await rent.getByText('必要経費 · 現金 · 固定費',{exact:false}).waitFor();
   page.once('dialog',dialog=>dialog.accept());
   await rent.getByRole('button',{name:'削除',exact:true}).click();await waitSaved();
-  await click('登録');
+  await click('登録');await page.getByRole('tab',{name:'支出',exact:true}).click();
   f=form('expense-form');
   await f.locator('[name=useDate]').fill('2026-08-28');
   await f.locator('[name=paymentMethod]').selectOption('card');
@@ -201,7 +203,7 @@ try {
   page.once('dialog',dialog=>dialog.accept());
   await page.locator('.entry').filter({hasText:'スーパー'}).getByRole('button',{name:'削除',exact:true}).click();await waitSaved();
   assert.equal(await page.locator('.entry').filter({hasText:'スーパー'}).count(),0);
-  await click('登録');await page.getByRole('tab',{name:'レシート'}).click();
+  await click('登録');assert.equal(await page.getByRole('tab',{name:'レシート'}).getAttribute('aria-selected'),'true');
   await form('receipt-form').locator('[name=image]').setInputFiles({name:'sample.png',mimeType:'image/png',buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlFkAAAAASUVORK5CYII=','base64')});
   await form('receipt-form').getByRole('button',{name:'画像を保存'}).click();await waitSaved();
   assert.equal(await page.locator('#import-form').count(),0);

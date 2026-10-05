@@ -41,6 +41,94 @@ function book(now = NOW) {
     }
   };
 }
+
+test('bank fixed settings pay the current month on JST day one; cash/card and zero stay manual', () => {
+  const b = book('2026-10-05T03:00:00.000Z');
+  fixed(b, { paymentMethod: 'bank', memo: '引落', plannedAmount: 1234 });
+  fixed(b, { id: 'cash', paymentMethod: 'cash' });
+  fixed(b, { id: 'card', paymentMethod: 'card' });
+  fixed(b, { id: 'zero', paymentMethod: 'bank', plannedAmount: 0 });
+  b.run('materializeMonth', { month: '2026-10' });
+  assert.equal(b.state.expenses.length, 1);
+  const actual = b.state.expenses[0];
+  assert.deepEqual(plain({ ...actual, id: '', planId: '' }), {
+    id: '', planId: '', settingId: 'fixed', useDate: '2026-10-01', accountingMonth: '2026-10',
+    amount: 1234, category: '必要経費', paymentMethod: 'bank', fixed: true,
+    description: '通信費', memo: '引落', manualEdited: false, version: 1
+  });
+  assert.equal(D.summarize(b.state, '2026-10').fixedTotal, 1234);
+  const outcome = D.reconcileBankFixedExpenses(b.state, b.options);
+  assert.equal(outcome.changed, false);
+  assert.equal(outcome.state.revision, b.state.revision);
+  assert.deepEqual(plain(outcome.createdExpenseIds), []);
+});
+
+test('future bank snapshots become due at JST midnight and keep frozen values after setting edits', () => {
+  const b = book('2026-10-31T14:59:59.999Z');
+  fixed(b, { paymentMethod: 'bank', plannedAmount: 100, memo: '当初' });
+  b.run('materializeMonth', { month: '2026-11' });
+  b.run('saveSetting', { id: 'fixed', plannedAmount: 900, name: '変更後', category: 'その他', memo: '新', paymentMethod: 'cash', active: false });
+  const before = JSON.stringify(b.state);
+  assert.equal(D.reconcileBankFixedExpenses(b.state, b.options).changed, false);
+  const due = D.reconcileBankFixedExpenses(b.state, { ...b.options, now: '2026-10-31T15:00:00.000Z' });
+  assert.equal(JSON.stringify(b.state), before);
+  assert.equal(due.createdExpenseIds.length, 1);
+  const actual = due.state.expenses.find(row => row.accountingMonth === '2026-11');
+  assert.equal(actual.useDate, '2026-11-01');
+  assert.equal(actual.amount, 100);
+  assert.equal(actual.description, '通信費');
+  assert.equal(actual.category, '必要経費');
+  assert.equal(actual.memo, '当初');
+  assert.equal(D.reconcileBankFixedExpenses(due.state, { ...b.options, now: '2026-11-05T03:00:00.000Z' }).changed, false);
+});
+
+test('bank catch-up only pays saved post-rollout snapshots and current active bank settings', () => {
+  const b = book('2026-09-20T03:00:00.000Z');
+  fixed(b, { paymentMethod: 'bank', plannedAmount: 100 });
+  b.run('materializeMonth', { month: '2026-10' });
+  assert.equal(b.state.expenses.length, 0);
+  const september = plain(b.state.plans.find(row => row.month === '2026-09'));
+  const outcome = D.reconcileBankFixedExpenses(b.state, { ...b.options, now: '2026-12-05T03:00:00.000Z' });
+  assert.deepEqual(plain(outcome.state.expenses.map(row => row.accountingMonth)).sort(), ['2026-10', '2026-12']);
+  assert.equal(outcome.state.plans.some(row => row.month === '2026-11'), false);
+  assert.deepEqual(plain(outcome.state.plans.find(row => row.month === '2026-09')), september);
+  assert.equal(outcome.state.revision, b.state.revision + 1);
+});
+
+test('automatic bank actual edits, detachment, month moves and deletion never recreate the original', () => {
+  for (const action of ['edit', 'detach', 'move', 'delete']) {
+    const b = book('2026-10-05T03:00:00.000Z');
+    fixed(b, { paymentMethod: 'bank' });
+    const actual = b.state.expenses[0];
+    if (action === 'delete') b.run('deleteExpense', { id: actual.id });
+    else b.run('upsertExpense', { id: actual.id, ...(
+      action === 'edit' ? { amount: 999, paymentMethod: 'cash' } :
+      action === 'detach' ? { settingId: '', fixed: false } : { useDate: '2026-11-02' }
+    ) });
+    b.run('materializeMonth', { month: '2026-10' });
+    const outcome = D.reconcileBankFixedExpenses(b.state, b.options);
+    assert.equal(outcome.changed, false, action);
+    assert.equal(outcome.state.expenses.length, 1, action);
+  }
+});
+
+test('legacy linked payments and tombstones suppress auto-pay without overwriting their values', () => {
+  for (const deleted of [false, true]) {
+    const b = book('2026-09-20T03:00:00.000Z');
+    fixed(b, { paymentMethod: 'bank' });
+    b.run('materializeMonth', { month: '2026-10' });
+    expense(b, { settingId: 'fixed', paymentMethod: 'cash', useDate: '2026-10-05', amount: 321 });
+    if (deleted) b.run('deleteExpense', { id: 'expense' });
+    const legacy = plain(b.state);
+    legacy.plans.forEach(plan => { delete plan.bankAutoHandled; });
+    const original = JSON.stringify(legacy.expenses);
+    const outcome = D.reconcileBankFixedExpenses(legacy, { ...b.options, now: '2026-10-05T03:00:00.000Z' });
+    assert.equal(outcome.createdExpenseIds.length, 0);
+    assert.equal(JSON.stringify(outcome.state.expenses), original);
+    assert.equal(outcome.state.plans.find(row => row.month === '2026-10').bankAutoHandled, true);
+    assert.equal(D.reconcileBankFixedExpenses(outcome.state, { ...b.options, now: '2026-10-05T03:00:00.000Z' }).changed, false);
+  }
+});
 function saving(b, overrides = {}) {
   return b.run('saveSetting', { id: 'saving', kind: 'saving', name: '旅行積立', plannedAmount: 20000, openingBalance: 50000, ...overrides });
 }
@@ -764,7 +852,7 @@ test('invalid stored relationships are rejected without attempting to repair or 
 
 test('indexed validation preserves missing-reference, mismatched-link and duplicate errors', () => {
   const b = book('2026-10-31T03:00:00.000Z');
-  fixed(b, { paymentMethod: 'bank' });
+  fixed(b, { paymentMethod: 'cash' });
   saving(b);
   b.run('materializeMonth', { month: '2026-10' });
   expense(b, { settingId: 'fixed', paymentMethod: 'bank' });

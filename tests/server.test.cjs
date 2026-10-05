@@ -19,6 +19,127 @@ function realDomain() {
   return context.HouseholdDomain;
 }
 
+function bankSnapshotState() {
+  const domain = realDomain();
+  let counter = 0;
+  const context = { now: '2026-09-20T03:00:00.000Z', uuid: () => `bank-seed-${++counter}` };
+  let state = domain.execute(domain.emptyState(), { type: 'saveSetting', operationId: 'bank-setting', payload: {
+    id: 'bank-fixed', kind: 'fixed', name: '銀行固定費', plannedAmount: 3000, paymentMethod: 'bank', category: '必要経費'
+  } }, context).state;
+  return domain.execute(state, { type: 'materializeMonth', operationId: 'bank-october-plan', payload: { month: '2026-10' } }, context).state;
+}
+
+test('public clock entry rejects serialized, forged and missing native enums before all IO', () => {
+  const h = harness({ domain: realDomain(), state: bankSnapshotState(), now: '2026-10-05T03:00:00.000Z' });
+  const full = h.context.ScriptApp.AuthMode.FULL;
+  const valid = { authMode: full, triggerUid: '4034124084959907503', timezone: 'Asia/Tokyo',
+    year: 2026, month: 10, 'day-of-month': 5, hour: 0, minute: 10 };
+  const forged = [undefined, null, {}, [], 'FULL', { ...valid, authMode: 'FULL' },
+    clone(valid), { ...valid, authMode: {} }, { ...valid, authMode: new String('FULL') },
+    { ...valid, authMode: h.context.ScriptApp.AuthMode.LIMITED },
+    { ...valid, triggerUid: '' }, { ...valid, triggerUid: 4034124084959907503 },
+    { ...valid, timezone: '' }, { ...valid, hour: 24 }, { ...valid, minute: '10' },
+    { authMode: full, triggerUid: valid.triggerUid }, { ...valid, month: 13 }];
+  for (const input of forged) assert.throws(() => h.call('processBankFixedExpensesDaily', input), /FORBIDDEN/);
+  assert.equal(h.io.sheet, 0); assert.equal(h.io.drive, 0); assert.equal(h.io.lockTaken, 0);
+  assert.equal(h.io.batches.length, 0);
+  h.context.ScriptApp.AuthMode.FULL = 'FULL';
+  assert.throws(() => h.call('processBankFixedExpensesDaily', { ...valid, authMode: 'FULL' }), /FORBIDDEN/);
+  assert.equal(h.io.sheet, 0); assert.equal(h.io.lockTaken, 0);
+});
+
+test('native clock entry processes due bank expenses once through the private locked path', () => {
+  const h = harness({ domain: realDomain(), state: bankSnapshotState(), now: '2026-10-05T03:00:00.000Z' });
+  const event = { authMode: h.context.ScriptApp.AuthMode.FULL, triggerUid: '4034124084959907503',
+    timezone: 'Asia/Tokyo', year: 2026, month: 10, 'day-of-month': 5, hour: 0, minute: 10 };
+  assert.equal(h.call('processBankFixedExpensesDaily', event).created, 1);
+  assert.equal(h.storedState().expenses.length, 1);
+  assert.equal(h.io.lockTaken, 1); assert.equal(h.io.lockReleased, 1);
+  const batches = h.io.batches.length;
+  assert.equal(h.call('processBankFixedExpensesDaily', event).created, 0);
+  assert.equal(h.io.batches.length, batches);
+  const session = h.login().session, reads = h.io.sheet;
+  assert.throws(() => h.call('rpc', { session, operation: 'processBankFixedExpensesDaily', payload: clone(event) }), /UNKNOWN_OPERATION/);
+  assert.equal(h.io.sheet, reads);
+});
+
+test('editor load pays due bank plans in one atomic batch, no-op reload leaves revision stable', () => {
+  const initial = bankSnapshotState();
+  const h = harness({ domain: realDomain(), state: initial, now: '2026-10-05T03:00:00.000Z' });
+  const session = h.login().session;
+  const result = h.call('rpc', { session, operation: 'load' });
+  assert.equal(result.expenses.length, 1);
+  assert.equal(result.expenses[0].useDate, '2026-10-01');
+  assert.equal(result.expenses[0].amount, 3000);
+  assert.equal(result.revision, initial.revision + 1);
+  assert.equal(h.io.batches.length, 1);
+  assert.deepEqual(h.io.batches[0].requests.map(request => request.updateCells.range.sheetId), [
+    h.sheets.get('HB_Expenses').sid, h.sheets.get('HB_Plans').sid, h.sheets.get('HB_Meta').sid
+  ]);
+  const next = h.call('rpc', { session, operation: 'load' });
+  assert.equal(next.revision, result.revision);
+  assert.equal(h.io.batches.length, 1);
+  assert.equal(h.io.lockTaken, h.io.lockReleased);
+  assert.equal(h.io.drive, 0);
+});
+
+test('bank auto-pay atomic rejection and lost-response retry never create duplicate expenses', () => {
+  for (const fault of ['before', 'after']) {
+    const initial = bankSnapshotState();
+    const h = harness({ domain: realDomain(), state: initial, now: '2026-10-05T03:00:00.000Z', batchFault: fault });
+    const session = h.login().session;
+    assert.throws(() => h.call('rpc', { session, operation: 'load' }), /SAVE_FAILED/);
+    const stored = h.storedState();
+    assert.equal(stored.expenses.length, fault === 'before' ? 0 : 1);
+    assert.equal(stored.plans.find(row => row.month === '2026-10').bankAutoHandled, fault === 'before' ? undefined : true);
+    assert.equal(stored.revision, initial.revision + (fault === 'before' ? 0 : 1));
+    const retry = h.call('rpc', { session, operation: 'load' });
+    assert.equal(retry.expenses.length, 1);
+    assert.equal(retry.revision, initial.revision + 1);
+    assert.equal(h.io.batches.length, fault === 'before' ? 2 : 1);
+  }
+});
+
+test('viewers cannot initiate bank catch-up; private daily handler uses the lock and RPC rejects its name', () => {
+  const initial = bankSnapshotState();
+  const h = harness({ domain: realDomain(), state: initial, now: '2026-10-05T03:00:00.000Z', props: {
+    HOUSEHOLD_VIEWER_EMAILS: 'reader@example.test'
+  } });
+  const session = h.login({ sub: 'reader-sub', email: 'reader@example.test' }).session;
+  const result = h.call('rpc', { session, operation: 'load' });
+  assert.equal(result.expenses.length, 0);
+  assert.equal(result.revision, initial.revision);
+  assert.equal(h.io.batches.length, 0);
+  const reads = h.io.sheet;
+  assert.throws(() => h.call('rpc', { session, operation: 'processBankFixedExpensesDaily_', payload: {} }), /UNKNOWN_OPERATION/);
+  assert.equal(h.io.sheet, reads);
+  const daily = h.call('processBankFixedExpensesDaily_');
+  assert.equal(daily.created, 1);
+  assert.equal(h.io.lockTaken, h.io.lockReleased);
+  const batches = h.io.batches.length;
+  assert.equal(h.call('processBankFixedExpensesDaily_').created, 0);
+  assert.equal(h.io.batches.length, batches);
+  assert.equal(h.io.drive, 0);
+  assert.match(source, /function processBankFixedExpensesDaily_\(/);
+});
+
+test('bank catch-up and receipt inbox load preserve both ledgers and the latest revision', () => {
+  const initial = bankSnapshotState();
+  const f = receiptInbox({ state: initial, now: '2026-10-05T03:00:00.000Z' });
+  f.append('bank-and-receipt', f.payload);
+  const before = f.h.storedState();
+  const result = f.load();
+  assert.equal(result.expenses.length, 3);
+  assert.equal(result.expenses.filter(row => row.settingId === 'bank-fixed').length, 1);
+  assert.equal(result.expenses.filter(row => row.receiptId === f.receipt.id).length, 2);
+  assert.equal(result.revision, before.revision + 2);
+  assert.equal(f.inbox.rows[1][2], 'processed');
+  assert.deepEqual(clone(result.expenses), f.h.storedState().expenses);
+  const batches = f.h.io.batches.length;
+  f.load();
+  assert.equal(f.h.io.batches.length, batches);
+});
+
 function receiptInbox(options = {}) {
   const h = harness({ domain: realDomain(), ...options });
   const session = h.login().session;
@@ -32,6 +153,7 @@ function receiptInbox(options = {}) {
 }
 
 function harness(options = {}) {
+  const clockNow = () => options.now ? new Date(options.now).getTime() : Date.now();
   const harnessOptionsHook = options.onBatchRead;
   const props = {
     HOUSEHOLD_SPREADSHEET_ID: 'private-sheet', HOUSEHOLD_RECEIPT_FOLDER_ID: 'private-folder',
@@ -47,7 +169,7 @@ function harness(options = {}) {
   let descriptionFault = options.descriptionFault;
   let archiveFault = options.archiveFault;
   let responseStatus = 200;
-  let claims = { aud: props.HOUSEHOLD_OAUTH_CLIENT_ID, iss: 'https://accounts.google.com', exp: Math.floor(Date.now() / 1000) + 3600, sub: 'wife-sub', email: 'wife@example.test', email_verified: true };
+  let claims = { aud: props.HOUSEHOLD_OAUTH_CLIENT_ID, iss: 'https://accounts.google.com', exp: Math.floor(clockNow() / 1000) + 3600, sub: 'wife-sub', email: 'wife@example.test', email_verified: true };
   const blob = (value, type = 'application/octet-stream', name = '') => {
     const bytes = typeof value === 'string' ? Buffer.from(value) : Buffer.from(value);
     return { getBytes: () => Array.from(bytes), getDataAsString: () => bytes.toString('utf8'), getContentType: () => type, getName: () => name };
@@ -104,6 +226,7 @@ function harness(options = {}) {
   const domain = {
     emptyState: empty,
     summarize() {},
+    reconcileBankFixedExpenses: state => ({ state: clone(state), changed: false, createdExpenseIds: [] }),
     execute(current, command, context) {
       const state = clone(current);
       const prior = state.operations.find(operation => operation.operationId === command.operationId);
@@ -122,9 +245,10 @@ function harness(options = {}) {
     }
   };
   const context = {
+    ...(options.now ? { Date: class extends Date { constructor(...args) { super(...(args.length ? args : [clockNow()])); } static now() { return clockNow(); } } } : {}),
     HouseholdDomain: options.domain || domain,
     PropertiesService: { getScriptProperties: () => ({ getProperty: name => props[name] || null, getProperties: () => ({ ...props }) }) },
-    CacheService: { getScriptCache: () => ({ put(key, value, ttl) { assert.ok(ttl > 0 && ttl <= 3600); cache.set(key, { value, expiry: Date.now() + ttl * 1000 }); }, get(key) { const item = cache.get(key); return item && item.expiry > Date.now() ? item.value : null; }, remove: key => cache.delete(key) }) },
+    CacheService: { getScriptCache: () => ({ put(key, value, ttl) { assert.ok(ttl > 0 && ttl <= 3600); cache.set(key, { value, expiry: clockNow() + ttl * 1000 }); }, get(key) { const item = cache.get(key); return item && item.expiry > clockNow() ? item.value : null; }, remove: key => cache.delete(key) }) },
     LockService: { getScriptLock: () => ({ tryLock() { io.lockTaken++; return !options.busy; }, releaseLock() { io.lockReleased++; } }) },
     Utilities: { getUuid: () => crypto.randomUUID(), newBlob: blob, base64Decode: value => Array.from(Buffer.from(value, 'base64')), base64DecodeWebSafe: value => Array.from(Buffer.from(value, 'base64url')), base64Encode: bytes => Buffer.from(bytes).toString('base64'), DigestAlgorithm: { SHA_256: 'sha256' }, computeDigest: (algorithm, bytes) => Array.from(crypto.createHash(algorithm).update(Buffer.from(bytes)).digest()) },
     UrlFetchApp: { fetch(url, request) {
@@ -200,7 +324,7 @@ function harness(options = {}) {
       for (const item of sheets.values()) Object.assign(item, next.get(item.sid));
       if (batchFault === 'after') { batchFault = null; throw Error('simulated lost commit response'); }
     } } },
-    ScriptApp: { getOAuthToken: () => 'owner-token-sensitive' },
+    ScriptApp: { AuthMode: { FULL: Object.freeze({ name: 'FULL' }), LIMITED: Object.freeze({ name: 'LIMITED' }) }, getOAuthToken: () => 'owner-token-sensitive' },
     DriveApp: { Access: { PRIVATE: 'PRIVATE' }, getFolderById(id) { io.drive++; if (!folders.has(id)) throw Error('missing folder'); return folders.get(id); }, getFileById(id) { io.drive++; if (!files.has(id)) throw Error('missing'); return files.get(id); } },
     HtmlService: { XFrameOptionsMode: { ALLOWALL: 'ALLOWALL' }, createTemplateFromFile: () => ({ evaluate() { return { setTitle() { return this; }, setXFrameOptionsMode() { return this; } }; } }) }
   };

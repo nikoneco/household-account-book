@@ -10,7 +10,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp
 const today = () => new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const monthLabel = value => `${Number(value.slice(0,4))}年${Number(value.slice(5,7))}月`;
 const savedTime = value => value ? new Intl.DateTimeFormat('ja-JP',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(value)) : '未確認';
-let month = today().slice(0,7), page = 'home', tab = 'expense', state = null, transport = null, config = null;
+let month = today().slice(0,7), page = 'home', tab = 'receipt', state = null, transport = null, config = null;
 let busy = false, loginLoading = false, pendingCommand = null, pendingSuccess = null, editing = null, settingEdit = null, loginPreparation = null, googleClient = null;
 let transferPreset = null, imageUrl = null, imageRequest = 0, authEpoch = 0, sessionRole = 'editor';
 let receiptUploads = [];
@@ -18,6 +18,7 @@ const materialized = new Set();
 const list = key => (state?.[key] || []).filter(item => key !== 'expenses' || !item.deleted);
 const withdrawalRemaining = expense => expense.amount - list('transfers').filter(t=>t.kind==='withdrawal'&&t.expenseId===expense.id).reduce((sum,t)=>sum+t.amount,0);
 const savings = () => list('settings').filter(item => item.kind === 'saving');
+const fixedPlansForMonth = value => list('plans').filter(plan=>plan.month===value&&plan.kind==='fixed'&&(!plan.bankAutoHandled||plan.id===editing?.planId));
 const options = (values, selected, label = value => value) => values.map(value => `<option value="${esc(value)}"${value === selected ? ' selected' : ''}>${esc(label(value))}</option>`).join('');
 const settingOptions = (items, selected = '', empty = '指定しない') => `<option value="">${empty}</option>` + items.map(item => `<option value="${esc(item.id)}"${item.id === selected ? ' selected' : ''}>${esc(item.name)}</option>`).join('');
 const field = (name,label,value,type='text',extra='') => `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;
@@ -53,17 +54,21 @@ function summary() {
   if (D?.summarize) return D.summarize(state,month);
   throw new Error('集計機能を読み込めませんでした。ページを再読み込みしてください。');
 }
+function plannedDepositRow(item) {
+  const currentMonth=month===today().slice(0,7), saved=item.planned>0&&item.deposited>=item.planned;
+  return `<div class="account-line saving-plan"><span>今月の積立予定</span><div class="saving-plan-actions"><strong>${yen(item.planned)}</strong><button type="button" class="quiet small" data-action="planned-deposit" data-id="${esc(item.settingId)}"${!currentMonth||item.planned<=0||saved?' disabled':''}>${saved?'入金済み':'この金額で入金'}</button></div></div>${!currentMonth?'<p class="hint">予定額での入金は今月の表示で使えます。実際の入金日を指定する場合は「入金・取り崩し」から記録してください。</p>':''}`;
+}
 function renderHome() {
   const s = summary();
   const categoryAmounts = s.categories;
   const fundedPurchases = s.pendingFunding.map(e=>({...e,id:e.expenseId,amount:e.pending}));
   const savingsBalance = s.savings.reduce((total,item)=>total+item.balance,0);
-  return heading(monthLabel(month),'給与・支出・積立の集計') + `<section class="panel ledger"><div class="ledger-main"><div class="ledger-title"><span>今月の残り</span>${button('toggle-income','給与を入力')}</div><div class="big-money ${s.monthlyRemaining<0?'negative':''}">${yen(s.monthlyRemaining)}</div><div class="account-line"><span>給与</span><strong>${yen(s.income)}</strong></div><div class="account-line"><span>給与からの購入・支払い</span><strong>− ${yen(s.salaryExpenses)}</strong></div><div class="account-line"><span>積立への入金</span><strong>− ${yen(s.savingsDeposited)}</strong></div><div id="income-edit" class="inline-edit" hidden>${formStart('income-form')}${moneyField('amount','この月の給与',s.income)}${formEnd('給与を保存')}</div><p class="ledger-foot">積立で賄った購入分は、給与から引きません。<br>残りは翌月に持ち越しません。</p>${s.savingsPending?`<p class="notice">積立で賄う購入の取り崩しが ${yen(s.savingsPending)} 未登録です。記録するまで給与からの購入・支払いに含まれます。</p>`:``}</div><div class="ledger-side"><h2>積立</h2><div class="account-line"><span>今月の積立予定</span><strong>${yen(s.savingsPlanned)}</strong></div><div class="account-line"><span>今月の積立入金</span><strong>${yen(s.savingsDeposited)}</strong></div><div class="account-line"><span>今月の取り崩し</span><strong>${yen(s.savingsWithdrawn)}</strong></div><div class="account-line emphasis"><span>積立残金</span><strong>${yen(savingsBalance)}</strong></div></div></section><div class="cols"><section class="panel"><h2>購入・支払の内訳</h2><p class="hint">積立で賄った購入も含みます。</p>${CATEGORIES.map(c=>`<div class="category"><span>${c}</span><meter class="bar" min="0" max="${s.expenses || 1}" value="${categoryAmounts[c]}" aria-label="${c}の割合"></meter><strong>${yen(categoryAmounts[c])}</strong></div>`).join('')}${!s.expenses?'<p class="hint">「登録」から支出を記録できます。</p>':''}</section><section class="panel"><h2>カードの照合</h2><div class="account-line"><span>購入明細の合計</span><strong>${yen(s.cardTotal)}</strong></div><div class="account-line"><span>確定請求額</span><strong>${s.confirmedAmount == null ? '未入力' : yen(s.confirmedAmount)}</strong></div><div class="account-line"><span>差額（請求 − 明細）</span><strong>${s.billDifference == null ? '—' : yen(s.billDifference)}</strong></div><p class="hint">27日締め・翌月28日請求。確定請求額は照合用で、支出に加算しません。</p>${formStart('bill-form')}${moneyField('confirmedAmount','確定請求額',s.confirmedAmount ?? '')}<label class="full">メモ<input name="memo" maxlength="300" value="${esc(list('bills').find(b=>b.month===month)?.memo||'')}"></label>${formEnd('請求額を保存')}</section></div><section class="panel section-space"><div class="row-head"><h2>積立残高</h2>${button('go-transfer','入金・取り崩し')}</div>${s.savings.length?s.savings.map(item=>`<div class="saving-row"><div class="row-head"><h3>${esc(item.name)}</h3><strong class="number">${yen(item.balance)}</strong></div><div class="account-line"><span>今月の積立予定</span><strong>${yen(item.planned)}</strong></div><div class="account-line"><span>今月の積立入金</span><strong>${yen(item.deposited)}</strong></div><div class="account-line"><span>今月の取り崩し</span><strong>${yen(item.withdrawn)}</strong></div><p class="hint">積立残金${item.targetAmount?' ／ 目標 '+yen(item.targetAmount):''}</p></div>`).join(''):'<div class="empty"><strong>積立はありません。</strong>「毎月の設定」で、積立の名前と金額を決められます。</div>'}${fundedPurchases.length ? `<div class="notice">積立で賄う購入の取り崩しを記録できます。カードは請求月に、支払い確認後に記録してください。</div>${fundedPurchases.map(e=>`<div class="saving-row"><div class="row-head"><span>${esc(e.description||e.category)} · ${yen(e.amount)}</span>${button('funded-withdraw',e.paymentMethod==='card'?'支払い確認・取り崩し':'取り崩しを記録',e.id)}</div></div>`).join('')}`:''}</section>`;
+  return heading(monthLabel(month),'給与・支出・積立の集計') + `<section class="panel ledger"><div class="ledger-main"><div class="ledger-title"><span>今月の残り</span>${button('toggle-income','給与を入力')}</div><div class="big-money ${s.monthlyRemaining<0?'negative':''}">${yen(s.monthlyRemaining)}</div><div class="account-line"><span>給与</span><strong>${yen(s.income)}</strong></div><div class="account-line"><span>給与からの購入・支払い</span><strong>− ${yen(s.salaryExpenses)}</strong></div><div class="account-line"><span>積立への入金</span><strong>− ${yen(s.savingsDeposited)}</strong></div><div id="income-edit" class="inline-edit" hidden>${formStart('income-form')}${moneyField('amount','この月の給与',s.income)}${formEnd('給与を保存')}</div><p class="ledger-foot">積立で賄った購入分は、給与から引きません。<br>残りは翌月に持ち越しません。</p>${s.savingsPending?`<p class="notice">積立で賄う購入の取り崩しが ${yen(s.savingsPending)} 未登録です。記録するまで給与からの購入・支払いに含まれます。</p>`:``}</div><div class="ledger-side"><h2>積立</h2><div class="account-line"><span>今月の積立予定</span><strong>${yen(s.savingsPlanned)}</strong></div><div class="account-line"><span>今月の積立入金</span><strong>${yen(s.savingsDeposited)}</strong></div><div class="account-line"><span>今月の取り崩し</span><strong>${yen(s.savingsWithdrawn)}</strong></div><div class="account-line emphasis"><span>積立残金</span><strong>${yen(savingsBalance)}</strong></div></div></section><div class="cols"><section class="panel"><h2>購入・支払の内訳</h2><p class="hint">積立で賄った購入も含みます。</p>${CATEGORIES.map(c=>`<div class="category"><span>${c}</span><meter class="bar" min="0" max="${s.expenses || 1}" value="${categoryAmounts[c]}" aria-label="${c}の割合"></meter><strong>${yen(categoryAmounts[c])}</strong></div>`).join('')}${!s.expenses?'<p class="hint">「登録」から支出を記録できます。</p>':''}</section><section class="panel"><h2>カードの照合</h2><div class="account-line"><span>購入明細の合計</span><strong>${yen(s.cardTotal)}</strong></div><div class="account-line"><span>確定請求額</span><strong>${s.confirmedAmount == null ? '未入力' : yen(s.confirmedAmount)}</strong></div><div class="account-line"><span>差額（請求 − 明細）</span><strong>${s.billDifference == null ? '—' : yen(s.billDifference)}</strong></div><p class="hint">27日締め・翌月28日請求。確定請求額は照合用で、支出に加算しません。</p>${formStart('bill-form')}${moneyField('confirmedAmount','確定請求額',s.confirmedAmount ?? '')}<label class="full">メモ<input name="memo" maxlength="300" value="${esc(list('bills').find(b=>b.month===month)?.memo||'')}"></label>${formEnd('請求額を保存')}</section></div><section class="panel section-space"><div class="row-head"><h2>積立残高</h2>${button('go-transfer','入金・取り崩し')}</div>${s.savings.length?s.savings.map(item=>`<div class="saving-row"><div class="row-head"><h3>${esc(item.name)}</h3><strong class="number">${yen(item.balance)}</strong></div>${plannedDepositRow(item)}<div class="account-line"><span>今月の積立入金</span><strong>${yen(item.deposited)}</strong></div><div class="account-line"><span>今月の取り崩し</span><strong>${yen(item.withdrawn)}</strong></div><p class="hint">積立残金${item.targetAmount?' ／ 目標 '+yen(item.targetAmount):''}</p></div>`).join(''):'<div class="empty"><strong>積立はありません。</strong>「毎月の設定」で、積立の名前と金額を決められます。</div>'}${fundedPurchases.length ? `<div class="notice">積立で賄う購入の取り崩しを記録できます。カードは請求月に、支払い確認後に記録してください。</div>${fundedPurchases.map(e=>`<div class="saving-row"><div class="row-head"><span>${esc(e.description||e.category)} · ${yen(e.amount)}</span>${button('funded-withdraw',e.paymentMethod==='card'?'支払い確認・取り崩し':'取り崩しを記録',e.id)}</div></div>`).join('')}`:''}</section>`;
 }
 
 function expenseForm() {
   const e = editing || {useDate:today(),amount:'',paymentMethod:'cash',category:'食費',accountingMonth:today().slice(0,7)};
-  const fixedPlans=list('plans').filter(p=>p.month===e.accountingMonth && p.kind==='fixed');
+  const fixedPlans=fixedPlansForMonth(e.accountingMonth);
   const fixedChoice=`<label class="full check-label"><input type="checkbox" name="fixed" ${e.fixed?'checked':''}>固定費として記録する</label>`;
   const actions=`<div class="form-actions"><button type="submit">${editing?'変更を保存':'支出を保存'}</button>${editing?button('cancel-expense','キャンセル'):''}</div>`;
   return `<section class="panel scroll-anchor" id="expense-panel">
@@ -180,9 +185,17 @@ function settingForm() {
   const s=settingEdit||{kind:'fixed',name:'',plannedAmount:'',category:'必要経費',paymentMethod:'bank',openingBalance:0,targetAmount:0,active:true};
   return `<section class="panel scroll-anchor" id="setting-panel"><h2>${settingEdit?'設定を編集':'毎月の項目を追加'}</h2>${formStart('setting-form')}<label>種類<select name="kind" ${settingEdit?'disabled':''}>${options(['fixed','saving'],s.kind,k=>k==='fixed'?'固定費':'積立')}</select></label>${field('name','名前',s.name,'text','required maxlength="100"')}${moneyField('plannedAmount','毎月の予定金額（円）',s.plannedAmount)}${paymentField(s.paymentMethod)}${categoryField(s.category)}${moneyField('openingBalance','開始残高（積立）',s.openingBalance)}${moneyField('targetAmount','目標金額（積立・任意）',s.targetAmount,'')}<label class="full">メモ<textarea name="memo" maxlength="500">${esc(s.memo)}</textarea></label>${formEnd(settingEdit?'設定を保存':'項目を追加',settingEdit?'cancel-setting':'')}<p class="hint">変更は次に作る月の予定へ反映します。すでに作成した月の予定は変わりません。</p></section>`;
 }
+function updateSettingFields() {
+  const form=document.querySelector('#setting-form');
+  if(!form)return;
+  const saving=form.elements.kind.value==='saving';
+  for(const name of ['openingBalance','targetAmount']){
+    const input=form.elements[name];input.closest('label').hidden=!saving;input.disabled=!saving;
+  }
+}
 function renderSettings() {
-  const plans=list('plans').filter(p=>p.month===month);
-  return heading('毎月の設定','固定費と積立の予定')+`<section class="panel settings-intro"><h2>固定費・積立</h2>${list('settings').length?list('settings').map(s=>`<div class="setting-row"><div class="row-head"><div><h3>${esc(s.name)}</h3><span class="muted">${s.kind==='saving'?'積立':'固定費'} · ${yen(s.plannedAmount)} / 月${!s.active?' · 停止中':''}</span></div><div>${button('edit-setting','編集',s.id)}${button('toggle-setting',s.active?'停止':'再開',s.id)}</div></div></div>`).join(''):'<div class="empty"><strong>毎月の項目はありません。</strong>固定費や積立を追加してください。</div>'}</section>${settingForm()}<section class="panel"><h2>${esc(month)} の予定</h2><p class="hint">この月だけ金額を変えたいときに。予定の変更だけでは支出や積立実績は増えません。</p>${plans.length?plans.map(p=>`<form class="monthly-form" data-plan-id="${esc(p.id)}"><h3>${esc(p.name)} <span class="pill">${p.kind==='saving'?'積立':'固定費'}</span></h3><div class="form-grid">${moneyField('plannedAmount','この月の予定金額',p.plannedAmount)}<label>メモ<input name="memo" value="${esc(p.memo)}" maxlength="500"></label></div><div class="form-actions"><button type="submit" class="quiet">この月の予定を保存</button></div></form>`).join(''):'<div class="empty">この月の予定はありません。項目を追加すると、次に開く月から予定が作られます。</div>'}</section>`;
+  const plans=list('plans').filter(p=>p.month===month&&p.kind==='saving');
+  return heading('毎月の設定','固定費と積立の予定')+`<section class="panel settings-intro"><h2>固定費・積立</h2>${list('settings').length?list('settings').map(s=>`<div class="setting-row"><div class="row-head"><div><h3>${esc(s.name)}</h3><span class="muted">${s.kind==='saving'?'積立':'固定費'} · ${yen(s.plannedAmount)} / 月${!s.active?' · 停止中':''}</span></div><div>${button('edit-setting','編集',s.id)}${button('toggle-setting',s.active?'停止':'再開',s.id)}</div></div></div>`).join(''):'<div class="empty"><strong>毎月の項目はありません。</strong>固定費や積立を追加してください。</div>'}</section>${settingForm()}<section class="panel"><h2>${esc(month)} の予定</h2><p class="hint">積立の予定をこの月だけ変えたいときに。予定の変更だけでは入金実績は増えません。</p>${plans.length?plans.map(p=>`<form class="monthly-form" data-plan-id="${esc(p.id)}"><h3>${esc(p.name)} <span class="pill">${p.kind==='saving'?'積立':'固定費'}</span></h3><div class="form-grid">${moneyField('plannedAmount','この月の予定金額',p.plannedAmount)}<label>メモ<input name="memo" value="${esc(p.memo)}" maxlength="500"></label></div><div class="form-actions"><button type="submit" class="quiet">この月の予定を保存</button></div></form>`).join(''):'<div class="empty">この月の積立予定はありません。積立を追加すると、今月以降の予定が作られます。</div>'}</section>`;
 }
 
 function render() {
@@ -196,16 +209,21 @@ function render() {
   main.innerHTML=page==='home'?renderHome():page==='register'?renderRegister():page==='history'?renderHistory():renderSettings();
   if(sessionRole==='viewer'){
     if(page==='register')main.innerHTML=heading('閲覧のみ','このアカウントでは記録の確認ができます。')+'<section class="panel"><p>支出や積立の変更は、編集できるアカウントでログインしてください。</p></section>';
-    main.querySelectorAll('form,[data-action="toggle-income"],[data-action="go-transfer"],[data-action="funded-withdraw"],[data-action="edit-expense"],[data-action="delete-expense"],[data-action="delete-transfer"],[data-action="edit-setting"],[data-action="toggle-setting"]').forEach(el=>el.hidden=true);
+    main.querySelectorAll('form,[data-action="toggle-income"],[data-action="go-transfer"],[data-action="planned-deposit"],[data-action="funded-withdraw"],[data-action="edit-expense"],[data-action="delete-expense"],[data-action="delete-transfer"],[data-action="edit-setting"],[data-action="toggle-setting"]').forEach(el=>el.hidden=true);
     document.querySelector('#mode-note').hidden=false;document.querySelector('#mode-note').textContent='閲覧のみ';
   }
   document.querySelectorAll('[data-page]').forEach(el=>{if(el.dataset.page===page)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
   updateTransferBalance();
+  updateSettingFields();
   setBusy(busy);
 }
 function setBusy(value) {
   busy=value;
   document.querySelectorAll('form button[type="submit"], [data-action="delete-expense"], [data-action="delete-transfer"], [data-action="toggle-setting"]').forEach(el=>el.disabled=value || !!pendingCommand);
+  document.querySelectorAll('[data-action="planned-deposit"]').forEach(el=>{
+    const item=summary().savings.find(item=>item.settingId===el.dataset.id);
+    el.disabled=value||!!pendingCommand||month!==today().slice(0,7)||!item||item.planned<=0||item.deposited>=item.planned;
+  });
   document.querySelector('#retry').disabled=value;
   main.setAttribute('aria-busy',String(value));
   updateReceiptUploads();
@@ -228,7 +246,7 @@ async function mutate(type,payload,onSuccess=()=>render(),exact=null) {
     if(epoch!==authEpoch)return;
     if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code)){await logout();message('ログインの有効期限が切れました。Googleでログインし直してください。',true);return;}
     if(error.code==='CONFLICT'){
-      try{const latest=await transport.load();if(epoch!==authEpoch)return;state=latest;pendingCommand=null;pendingSuccess=null;document.querySelector('#pending').hidden=true;message('最新情報を読み込みました。入力内容を確認して、もう一度保存してください。',true);return;}catch{}
+      try{const latest=await transport.load();if(epoch!==authEpoch)return;state=latest;pendingCommand=null;pendingSuccess=null;document.querySelector('#pending').hidden=true;if(page==='home'&&command.type==='saveTransfer')render();message('最新情報を読み込みました。入力内容を確認して、もう一度保存してください。',true);return;}catch{}
     }
     const retryable = ['TIMEOUT','NETWORK','NETWORK_ERROR','TRANSPORT_ERROR','CONNECTION_ERROR'].includes(error.code) || /timeout|timed out|通信|接続|ネットワーク|fetch/i.test(error.message);
     if (retryable) { pendingCommand=command;document.querySelector('#pending').hidden=false; }
@@ -275,7 +293,7 @@ document.addEventListener('submit',async event=>{
     await mutate('saveTransfer',{...p,id:crypto.randomUUID(),month:p.date.slice(0,7),amount:num(p.amount)},()=>{transferPreset=null;render();});
   } else if(form.id==='setting-form'){
     const isNew=!settingEdit;
-    await mutate('saveSetting',{...settingEdit,...p,id:settingEdit?.id||crypto.randomUUID(),kind:settingEdit?.kind||p.kind,plannedAmount:num(p.plannedAmount),openingBalance:num(p.openingBalance),targetAmount:num(p.targetAmount),active:settingEdit?.active??true},()=>{settingEdit=null;if(isNew)materialized.delete(month);render();if(isNew)setTimeout(()=>ensureMonth(),0);});
+    await mutate('saveSetting',{...settingEdit,...p,id:settingEdit?.id||crypto.randomUUID(),kind:settingEdit?.kind||p.kind,plannedAmount:num(p.plannedAmount),openingBalance:(settingEdit?.kind||p.kind)==='saving'?num(p.openingBalance):0,targetAmount:(settingEdit?.kind||p.kind)==='saving'?num(p.targetAmount):0,active:settingEdit?.active??true},()=>{settingEdit=null;if(isNew)materialized.delete(month);render();if(isNew)setTimeout(()=>ensureMonth(),0);});
   } else if(form.matches('[data-plan-id]')){
     const plan=list('plans').find(x=>x.id===form.dataset.planId);
     await mutate('savePlan',{...plan,plannedAmount:num(p.plannedAmount),memo:p.memo});
@@ -307,13 +325,14 @@ document.addEventListener('change',async event=>{
     if(accounting){
       document.querySelector('#accounting-label').textContent=monthLabel(accounting);
       const selector=el.form.elements.planId,chosen=selector.value;
-      selector.innerHTML=settingOptions(list('plans').filter(plan=>plan.kind==='fixed'&&plan.month===accounting),chosen,'予定を選ばない');
+      selector.innerHTML=settingOptions(fixedPlansForMonth(accounting),chosen,'予定を選ばない');
     }
   }
   if(el.closest('#transfer-form') && el.name==='expenseId'){
     const expense=list('expenses').find(e=>e.id===el.value);if(expense){const f=el.form;f.elements.kind.value='withdrawal';f.elements.amount.value=withdrawalRemaining(expense);if(expense.fundingSettingId)f.elements.settingId.value=expense.fundingSettingId;}
   }
   if(el.closest('#transfer-form'))updateTransferBalance();
+  if(el.closest('#setting-form')&&el.name==='kind')updateSettingFields();
 });
 document.addEventListener('click',async event=>{
   const homeLink=event.target.closest('.brand');if(homeLink&&state){event.preventDefault();if(!busy&&!pendingCommand)switchPage('home');return;}
@@ -326,7 +345,7 @@ document.addEventListener('click',async event=>{
   if(btn.id==='retry'){if(pendingCommand)await mutate(null,null,pendingSuccess,pendingCommand);return;}
   if(busy&&(btn.dataset.page||btn.dataset.tab||btn.dataset.action)){message('保存が終わるまでお待ちください。入力はこの画面に残っています。',true);return;}
   if(pendingCommand&&(btn.dataset.page||btn.dataset.tab||btn.dataset.action)){message('同じ内容で再試行して保存結果を確認してください。入力はこの画面に残っています。',true);return;}
-  if(btn.dataset.page){switchPage(btn.dataset.page);return;}
+  if(btn.dataset.page){if(btn.dataset.page==='register'){tab='receipt';editing=null;transferPreset=null;}switchPage(btn.dataset.page);return;}
   if(btn.dataset.tab){tab=btn.dataset.tab;render();return;}
   const action=btn.dataset.action,id=btn.dataset.id;
   if(action==='receipt-camera'||action==='receipt-files'){document.querySelector(`#${action}`).click();return;}
@@ -335,6 +354,12 @@ document.addEventListener('click',async event=>{
   if(action==='expense-detail'){showExpenseDetail(id);return;}
   if(action==='close-detail'){closeDetail();return;}
   if(action==='toggle-income'){const panel=document.querySelector('#income-edit');panel.hidden=!panel.hidden;if(!panel.hidden)panel.querySelector('input').focus();}
+  if(action==='planned-deposit'){
+    const date=today(),item=summary().savings.find(item=>item.settingId===id);
+    if(month!==date.slice(0,7)||!item||item.planned<=0||item.deposited>=item.planned)return;
+    const amount=item.planned,name=item.name;
+    await mutate('saveTransfer',{id:crypto.randomUUID(),settingId:id,kind:'deposit',date,month:date.slice(0,7),amount,expenseId:'',memo:''},()=>{render();return `${name}に${yen(amount)}を入金しました（${date}）。`;});
+  }
   if(action==='go-transfer'){tab='transfer';switchPage('register');}
   if(action==='edit-expense'){closeDetail();editing={...list('expenses').find(e=>e.id===id)};tab='expense';switchPage('register');}
   if(action==='cancel-expense'){editing=null;render();}
@@ -420,7 +445,7 @@ async function showImage(id,trigger) {
 async function logout() {
   receiptUploads=[];
   clearSession();authEpoch++;closeImage();const previous=transport;
-  state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='home';tab='expense';busy=false;loginLoading=false;sessionRole='editor';
+  state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='home';tab='receipt';busy=false;loginLoading=false;sessionRole='editor';
   main.replaceChildren();document.querySelector('#pending').hidden=true;document.querySelector('#mode-note').hidden=true;clearMessages();
   transport=null;renderAuth();
   // Clear the UI/storage immediately even if the revocation request is slow/offline.

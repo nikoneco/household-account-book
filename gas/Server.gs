@@ -94,6 +94,7 @@ function rpc(request) {
     if (identity.role !== 'editor' && ['mutate', 'uploadReceipt'].indexOf(request.operation) >= 0) fail_('FORBIDDEN', '閲覧アカウントでは変更できません。');
     var store = loadStore_();
     if (request.operation === 'load') {
+      if (identity.role === 'editor') syncBankFixedExpenses_(store);
       // The financial/inbox transaction must finish before any Drive mutation.
       var state = identity.role === 'editor' ? archiveImportedReceipts_(store, consumeInbox_(store)) : store.state;
       return clientState_(state);
@@ -116,6 +117,47 @@ function clientState_(state) {
   // The durable operation results belong only on the server. The UI needs the
   // real records and revision, but never the duplicate retry ledger payloads.
   return Object.assign({}, state, { operations: [] });
+}
+
+function syncBankFixedExpenses_(store) {
+  var changed = HouseholdDomain.reconcileBankFixedExpenses(store.state, domainContext_());
+  persistStore_(store, changed.state);
+  if (changed.changed) {
+    // Later inbox processing uses the same locked transaction snapshot, without
+    // comparing against pre-catch-up rows or overwriting the new revision.
+    store.state = changed.state;
+    Object.keys(HOUSEHOLD_TABLES_).forEach(function (key) {
+      store.rows[key] = [['id', 'json']].concat(changed.state[key].map(function (row) {
+        return [key === 'operations' ? row.operationId : row.id, JSON.stringify(row)];
+      }));
+    });
+    store.rows.meta = [['id', 'json'], ['meta', JSON.stringify({ id: 'meta', schemaVersion: changed.state.schemaVersion, revision: changed.state.revision })]];
+  }
+  return { created: changed.createdExpenseIds.length, revision: changed.state.revision };
+}
+
+// The editor's trigger picker requires a public name. Accept only a native GAS
+// enum by identity, never the string "FULL" or a client-serialized enum copy.
+// Fail closed if GAS ever changes enums to primitives. Check before any IO.
+function processBankFixedExpensesDaily(event) {
+  var full = ScriptApp.AuthMode && ScriptApp.AuthMode.FULL;
+  if (!event || typeof event !== 'object' || Array.isArray(event) || !full || typeof full !== 'object' ||
+      event.authMode !== full || typeof event.triggerUid !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(event.triggerUid) ||
+      typeof event.timezone !== 'string' || !event.timezone || event.timezone.length > 200 ||
+      !Number.isInteger(event.year) || event.year < 1 || event.year > 9999 ||
+      !Number.isInteger(event.month) || event.month < 1 || event.month > 12 ||
+      !Number.isInteger(event['day-of-month']) || event['day-of-month'] < 1 || event['day-of-month'] > 31 ||
+      !Number.isInteger(event.hour) || event.hour < 0 || event.hour > 23 ||
+      !Number.isInteger(event.minute) || event.minute < 0 || event.minute > 59) {
+    fail_('FORBIDDEN', 'この処理は所有者の時間トリガー専用です。');
+  }
+  return processBankFixedExpensesDaily_();
+}
+
+// Owner-only editor helper. The underscore keeps direct access off
+// google.script.run; both functions are absent from the RPC allowlist.
+function processBankFixedExpensesDaily_() {
+  return locked_(function () { return syncBankFixedExpenses_(loadStore_()); });
 }
 
 function clientChange_(changed) { return { state: clientState_(changed.state), result: changed.result }; }
