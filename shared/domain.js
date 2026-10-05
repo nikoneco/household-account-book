@@ -487,8 +487,12 @@ var HouseholdDomain = (function () {
   }
   function setReceiptStatus(state, p) {
     var receipt = byId(state.receipts, p.receiptId || p.id, 'レシート');
-    receipt.status = oneOf(p.status, ['pending', 'needsReview', 'imported', 'failed'], 'レシート状態');
-    receipt.reason = text(p.reason || '', '確認理由', false);
+    var status = oneOf(p.status, ['pending', 'needsReview', 'imported', 'failed'], 'レシート状態');
+    if (status === 'pending' && (receipt.expenseIds.length || receipt.status === 'imported')) {
+      fail('CONFLICT', '取込済みのレシートは再解析待ちに戻せません。明細を編集してください。');
+    }
+    receipt.status = status;
+    receipt.reason = status === 'pending' ? '' : text(p.reason || '', '確認理由', false);
     return receipt;
   }
   function importReceipt(state, p) {
