@@ -33,6 +33,10 @@ var HouseholdDomain = (function () {
     if (!Number.isSafeInteger(value) || value < (positive ? 1 : 0)) fail('INVALID_INPUT', (label || '金額') + 'は' + (positive ? '1円以上' : '0円以上') + 'の整数で入力してください。');
     return value;
   }
+  function quantity(value) {
+    if (!Number.isSafeInteger(value) || value < 1) fail('INVALID_INPUT', '数量は1以上の整数で入力してください。');
+    return value;
+  }
   function add(a, b) {
     var sum = a + b;
     if (!Number.isSafeInteger(sum)) fail('INVALID_INPUT', '金額の合計が安全に扱える範囲を超えています。');
@@ -196,6 +200,7 @@ var HouseholdDomain = (function () {
       text(row.mimeType, 'ファイル形式', false, 200);
       if (!row.uploadedAt || timestamp(row.uploadedAt) !== row.uploadedAt) fail('INVALID_INPUT', 'アップロード日時を確認してください。');
       if (row.purchaseDate != null) date(row.purchaseDate);
+      if (own(row, 'merchant')) text(row.merchant, '店名', true, 120);
       if (!Array.isArray(row.expenseIds)) fail('INVALID_INPUT', 'レシート明細リンクを確認してください。');
       unique(row.expenseIds.map(function (id) { return { id: id }; }), function (entry) { return entry.id; }, 'レシート明細リンク');
       row.expenseIds.forEach(function (id) {
@@ -211,6 +216,7 @@ var HouseholdDomain = (function () {
     state.expenses.forEach(function (row) {
       date(row.useDate); month(row.accountingMonth);
       amount(row.amount, '支出額', true);
+      if (own(row, 'quantity')) quantity(row.quantity);
       oneOf(row.category, CATEGORIES, '分類');
       oneOf(row.paymentMethod, PAYMENT_METHODS, '支払方法');
       bool(row.fixed, '固定費属性'); bool(row.manualEdited, '手修正状態');
@@ -354,6 +360,9 @@ var HouseholdDomain = (function () {
       memo: text(value(p, old, 'memo', ''), 'メモ', false),
       manualEdited: Boolean(old && old.manualEdited), version: old ? add(old.version, 1) : 1
     };
+    // Missing quantity stays unknown; an explicit null clears a previous value.
+    var itemQuantity = value(p, old, 'quantity', undefined);
+    if (itemQuantity != null) row.quantity = quantity(itemQuantity);
     var settingId = optionalId(value(p, old, 'settingId', undefined), '固定費設定ID');
     var planId = optionalId(value(p, old, 'planId', undefined), '固定費計画ID');
     // An explicit setting change/detachment also detaches the previous plan.
@@ -454,12 +463,15 @@ var HouseholdDomain = (function () {
       var useDate = date(p.useDate);
       var method = oneOf(p.paymentMethod, PAYMENT_METHODS, '支払方法');
       var total = amount(p.total, 'レシート合計', true);
+      var merchant = own(p, 'merchant') ? text(p.merchant, '店名', false, 120).trim() : '';
       if (!Array.isArray(p.lines) || p.lines.length === 0) fail('INVALID_INPUT', 'レシート明細がありません。');
       normalized = p.lines.map(function (line) {
         object(line, 'レシート明細');
         var lineId = identifier(line.lineId, 'レシート行ID');
         var id = identifier('receipt:' + encodeURIComponent(receipt.id) + ':' + encodeURIComponent(lineId), '取込明細ID');
-        return { id: id, lineId: lineId, amount: amount(line.amount, '明細金額', true), category: oneOf(line.category, CATEGORIES, '分類'), description: text(line.description || '', '内容', false, 2000) };
+        var normalizedLine = { id: id, lineId: lineId, amount: amount(line.amount, '明細金額', true), category: oneOf(line.category, CATEGORIES, '分類'), description: text(line.description || '', '内容', false, 2000) };
+        if (own(line, 'quantity')) normalizedLine.quantity = quantity(line.quantity);
+        return normalizedLine;
       });
       unique(normalized, function (line) { return line.lineId; }, 'レシート行ID');
       if (sum(normalized, 'amount') !== total) fail('INVALID_INPUT', 'レシート合計と明細の合計が一致しません。');
@@ -472,17 +484,21 @@ var HouseholdDomain = (function () {
     var expenses = normalized.map(function (line) {
       var id = line.id;
       if (state.expenses.some(function (expense) { return expense.id === id; })) fail('CONFLICT', 'レシート明細のIDが既存の明細と重複しています。');
-      return {
+      var expense = {
         id: id, useDate: useDate, accountingMonth: method === 'card' ? cardMonth(useDate) : useDate.slice(0, 7),
         amount: line.amount, category: line.category, paymentMethod: method, fixed: false,
         receiptId: receipt.id, receiptLineId: line.lineId, description: line.description, memo: p.memo || '', manualEdited: false, version: 1
       };
+      // amount is already the line total, including all units. Never multiply it.
+      if (own(line, 'quantity')) expense.quantity = line.quantity;
+      return expense;
     });
     state.expenses = state.expenses.concat(expenses);
     receipt.expenseIds = expenses.map(function (expense) { return expense.id; });
     // This is the date printed on the receipt, supplied by the reviewed extraction.
     // Upload/capture timestamps never substitute for it; later expense edits do not change it.
     receipt.purchaseDate = useDate;
+    if (merchant) receipt.merchant = merchant;
     receipt.status = 'imported'; receipt.reason = '';
     return { receipt: receipt, expenses: expenses, imported: true, alreadyImported: false, needsReview: false };
   }
