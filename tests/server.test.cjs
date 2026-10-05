@@ -598,6 +598,101 @@ test('editor load imports inbox and commits financial rows and C:D statuses toge
   assert.ok(f.h.io.batchReads.at(-1).ranges.every(range => !/A\d+:B\d+/.test(range)), 'completed raw JSON is not requested again');
 });
 
+test('reanalysis resets only the receipt, preserves review history and imports a new extraction once', () => {
+  const f = receiptInbox({ props: { HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID: 'private-archive' } });
+  const old = f.append('receipt:analysis:v1', { receiptId: f.receipt.id, reviewReason: '外税を確認' });
+  f.load();
+  const history = clone(f.inbox.rows);
+  const journal = clone(f.h.storedState().operations);
+  const reset = f.h.call('rpc', { session: f.session, operation: 'mutate', payload: {
+    type: 'setReceiptStatus', operationId: 'reset-receipt', payload: { id: f.receipt.id, status: 'pending', reason: '古い理由' }
+  } });
+  assert.equal(reset.state.receipts[0].status, 'pending');
+  assert.equal(reset.state.receipts[0].reason, '');
+  assert.deepEqual(f.inbox.rows, history, 'reset never writes inbox history');
+  assert.deepEqual(f.h.storedState().operations.slice(0, journal.length), journal);
+  f.inbox.rows[old][2] = 'pending'; // Simulate a mistaken manual sheet edit.
+  const pending = f.load();
+  assert.equal(pending.receipts[0].status, 'pending', 'old review cannot undo the reset');
+  assert.equal(f.inbox.rows[old][2], 'needsReview');
+  assert.equal(f.inbox.rows[old][3], '外税を確認');
+  const corrected = f.append('receipt:analysis:v2', f.payload);
+  let state = f.load();
+  assert.equal(state.receipts[0].status, 'imported');
+  assert.equal(state.receipts[0].archiveStatus, 'archived');
+  assert.equal(f.inbox.rows[old][2], 'needsReview');
+  assert.equal(f.inbox.rows[corrected][2], 'processed');
+  assert.equal(state.expenses.length, 2); assert.equal(f.h.io.moves.length, 1);
+  const committed = clone(f.h.storedState());
+  f.inbox.rows[old][2] = 'pending'; f.inbox.rows[corrected][2] = 'pending';
+  state = f.load();
+  assert.deepEqual(f.h.storedState(), committed, 'replayed results change no ledger, receipt or operation');
+  assert.equal(f.inbox.rows[old][2], 'needsReview'); assert.equal(f.inbox.rows[corrected][2], 'processed');
+  assert.equal(f.h.io.moves.length, 1);
+  assert.throws(() => f.h.call('rpc', { session: f.session, operation: 'mutate', payload: {
+    type: 'setReceiptStatus', operationId: 'reset-imported', payload: { id: f.receipt.id, status: 'pending' }
+  } }), /CONFLICT:/);
+});
+
+test('old pending review plus a corrected new row import without reapplying the old result', () => {
+  const f = receiptInbox();
+  const old = f.append('receipt:analysis:v1', { receiptId: f.receipt.id, reviewReason: '税額を確認' });
+  f.load();
+  const oldSource = clone(f.inbox.rows[old].slice(0, 2));
+  f.inbox.rows[old][2] = 'pending';
+  const correction = f.append('receipt:analysis:v2', f.payload);
+  const state = f.load();
+  assert.equal(state.receipts[0].status, 'imported'); assert.equal(state.expenses.length, 2);
+  assert.equal(f.inbox.rows[old][2], 'needsReview'); assert.equal(f.inbox.rows[old][3], '税額を確認');
+  assert.deepEqual(f.inbox.rows[old].slice(0, 2), oldSource);
+  assert.equal(f.inbox.rows[correction][2], 'processed');
+  const after = clone(f.h.storedState()); f.load(); assert.deepEqual(f.h.storedState(), after);
+});
+
+test('owner inbox repair leaves unrelated monthly automation untouched and retries atomic failures', () => {
+  const domain = realDomain();
+  let sequence = 0;
+  const context = { now: '2026-09-20T03:00:00.000Z', uuid: () => 'receipt-repair-plan-' + (++sequence) };
+  let initial = domain.execute(domain.emptyState(), { type: 'saveSetting', operationId: 'repair-bank-setting', payload: {
+    id: 'repair-bank', kind: 'fixed', name: '銀行固定費', plannedAmount: 3000, paymentMethod: 'bank', category: '必要経費'
+  } }, context).state;
+  initial = domain.execute(initial, { type: 'materializeMonth', operationId: 'repair-bank-plan', payload: { month: '2026-10' } }, context).state;
+  for (const fault of ['before', 'after']) {
+    const f = receiptInbox({ state: initial, now: '2026-10-05T03:00:00.000Z',
+      props: { HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID: 'private-archive' } });
+    const old = f.append('repair:v1', { receiptId: f.receipt.id, reviewReason: '税額を確認' });
+    f.h.call('processReceiptInbox_');
+    f.inbox.rows[old][2] = 'pending';
+    const corrected = f.append('repair:v2', f.payload);
+    const before = f.h.storedState(); f.h.setBatchFault(fault);
+    assert.throws(() => f.h.call('processReceiptInbox_'), /SAVE_FAILED/);
+    assert.equal(f.h.io.moves.length, 0);
+    f.h.call('processReceiptInbox_');
+    const state = f.h.storedState();
+    assert.equal(state.expenses.length, before.expenses.length + 2);
+    assert.equal(f.inbox.rows[old][2], 'needsReview'); assert.equal(f.inbox.rows[corrected][2], 'processed');
+    assert.equal(state.receipts[0].archiveStatus, 'archived'); assert.equal(f.h.io.moves.length, 1);
+    for (const key of ['settings', 'plans', 'transfers', 'incomes', 'bills']) assert.deepEqual(state[key], before[key]);
+    const journal = clone(state.operations); f.h.call('processReceiptInbox_');
+    assert.deepEqual(f.h.storedState().operations, journal); assert.equal(f.h.io.moves.length, 1);
+    assert.throws(() => f.h.call('rpc', { session: f.session, operation: 'processReceiptInbox_' }), /UNKNOWN_OPERATION:/);
+  }
+});
+
+test('restoring an already imported extraction uses its original processed outcome even if receipt needs review', () => {
+  const f = receiptInbox();
+  f.append('initial-import', f.payload); f.load();
+  f.h.call('rpc', { session: f.session, operation: 'mutate', payload: {
+    type: 'setReceiptStatus', operationId: 'later-review', payload: { id: f.receipt.id, status: 'needsReview', reason: '別の確認' }
+  } });
+  const repeated = f.append('already-imported-source', f.payload); f.load();
+  assert.equal(f.inbox.rows[repeated][2], 'processed'); assert.equal(f.inbox.rows[repeated][3], '');
+  const before = clone(f.h.storedState());
+  f.inbox.rows[repeated][2] = 'pending'; f.load();
+  assert.equal(f.inbox.rows[repeated][2], 'processed'); assert.equal(f.inbox.rows[repeated][3], '');
+  assert.deepEqual(f.h.storedState(), before);
+});
+
 test('inbox malformed JSON and unknown receipt fail safely; invalid total/date need review without expenses', () => {
   const f = receiptInbox();
   const malformed = f.append('malformed', '{"receiptId":');

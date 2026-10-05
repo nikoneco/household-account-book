@@ -333,6 +333,16 @@ function inboxHeader_(values) {
   }
 }
 
+// Owner editor helper: reconcile receipt results without running other monthly
+// automation. The underscore excludes it from google.script.run and RPC.
+function processReceiptInbox_() {
+  return locked_(function () {
+    var store = loadStore_();
+    var state = archiveImportedReceipts_(store, consumeInbox_(store));
+    return { revision: state.revision };
+  });
+}
+
 function consumeInbox_(store) {
   var sheet = store.book.getSheetByName(HOUSEHOLD_INBOX_);
   if (!sheet) fail_('NOT_INITIALIZED', '管理者によるレシート受信表の初期化が必要です。');
@@ -387,26 +397,36 @@ function consumeInbox_(store) {
         reason = '対象レシートが見つかりません。アプリのレシートIDを確認してください。';
         throw new Error('INBOX_RECEIPT');
       }
-      var command = { type: 'importReceipt', operationId: operationId, payload: payload };
-      if (payload.reviewReason !== undefined && !receipt.expenseIds.length) {
-        if (typeof payload.reviewReason !== 'string' || !payload.reviewReason.trim() || payload.reviewReason.length > 1000) throw new Error('INBOX_FORMAT');
-        command.type = 'setReceiptStatus';
-        command.payload = { receiptId: receipt.id, status: 'needsReview', reason: payload.reviewReason };
+      if (previous) {
+        // An inbox row is a history of this extraction, not the receipt's
+        // current state. A reset C cell must not replay an old review result or
+        // mark it processed after the receipt was reset or a correction imported.
+        var savedReceipt = previous.type === 'setReceiptStatus' ? previous.result : previous.result && previous.result.receipt;
+        if (!savedReceipt || savedReceipt.id !== receipt.id) throw new Error('INBOX_CONFLICT');
+        status = savedReceipt.expenseIds.length ? 'processed' : (savedReceipt.status === 'needsReview' ? 'needsReview' : 'processed');
+        reason = status === 'needsReview' ? savedReceipt.reason || '' : '';
+      } else {
+        var command = { type: 'importReceipt', operationId: operationId, payload: payload };
+        if (payload.reviewReason !== undefined && !receipt.expenseIds.length) {
+          if (typeof payload.reviewReason !== 'string' || !payload.reviewReason.trim() || payload.reviewReason.length > 1000) throw new Error('INBOX_FORMAT');
+          command.type = 'setReceiptStatus';
+          command.payload = { receiptId: receipt.id, status: 'needsReview', reason: payload.reviewReason };
+        }
+        var changed = domainExecute_(current, command);
+        var journal = changed.state.operations.find(function (operation) { return operation.operationId === operationId; });
+        journal.inboxHash = sourceHash;
+        // A row must fit the existing single-cell operation journal before joining
+        // this atomic group. An oversized extraction cannot block other valid rows.
+        if (JSON.stringify(journal).length > 49000) {
+          reason = '解析結果が大きすぎます。分類ごとにまとめて短くした解析結果を、新しいIDで追記してください。';
+          throw new Error('INBOX_LIMIT');
+        }
+        trustedReceiptReferences_(current, changed.state);
+        current = changed.state;
+        var updated = current.receipts.find(function (item) { return item.id === receipt.id; });
+        status = updated.expenseIds.length ? 'processed' : (updated.status === 'needsReview' ? 'needsReview' : 'processed');
+        reason = status === 'needsReview' ? updated.reason : '';
       }
-      var changed = domainExecute_(current, command);
-      var journal = changed.state.operations.find(function (operation) { return operation.operationId === operationId; });
-      if (!previous) journal.inboxHash = sourceHash;
-      // A row must fit the existing single-cell operation journal before joining
-      // this atomic group. An oversized extraction cannot block other valid rows.
-      if (JSON.stringify(journal).length > 49000) {
-        reason = '解析結果が大きすぎます。分類ごとにまとめて短くした解析結果を、新しいIDで追記してください。';
-        throw new Error('INBOX_LIMIT');
-      }
-      trustedReceiptReferences_(current, changed.state);
-      current = changed.state;
-      var updated = current.receipts.find(function (item) { return item.id === receipt.id; });
-      status = updated.expenseIds.length ? 'processed' : (updated.status === 'needsReview' ? 'needsReview' : 'processed');
-      reason = status === 'needsReview' ? updated.reason : '';
     } catch (error) {
       // Expected bad rows are recorded, while unrelated service/program errors
       // remain failures of the complete request instead of silently discarding it.
