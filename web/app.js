@@ -110,11 +110,13 @@ function receiptForm() {
   return `<section class="panel"><h2>レシート画像を保存</h2><p class="muted">レシートに印字された購入日が読める写真を選んでください。</p><form id="receipt-form"><div class="receipt-pickers">${button('receipt-camera','カメラで撮る','','quiet')}${button('receipt-files','写真を選ぶ','','quiet')}<input id="receipt-camera" name="camera" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" hidden><input id="receipt-files" name="image" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></div><p class="hint">撮影を繰り返して追加できます。保存済みの写真は複数選べます。1枚8MBまで。</p><div id="receipt-upload-progress">${receiptUploadProgress()}</div><div class="form-actions receipt-actions"><button type="submit">画像を保存</button>${button('receipt-retry','失敗した写真を再送','','quiet')}${button('receipt-clear','選択をクリア','','quiet')}</div></form></section><section class="panel"><h2>保存したレシート</h2><p class="hint">購入日はレシートで確認できた日付です。保存日時とは別に表示します。</p>${renderReceipts()}</section>`;
 }
 function receiptUploadProgress() {
-  if(!receiptUploads.length)return '<p class="hint">写真はまだ選んでいません。</p>';
+  if(!receiptUploads.length)return '<p class="hint">写真を選ぶか、カメラで撮影してください。</p>';
   const finished=receiptUploads.filter(item=>['saved','failed'].includes(item.status)).length;
-  const saved=receiptUploads.filter(item=>item.status==='saved').length;
+  const selected=receiptUploads.filter(item=>item.status==='selected').length;
+  const failed=receiptUploads.filter(item=>item.status==='failed').length;
+  const summary=busy?`${finished} / ${receiptUploads.length}枚の処理が完了`:[selected?`${selected}枚選択`:'',failed?`${failed}枚は再送待ち`:''].filter(Boolean).join('・');
   const labels={selected:'送信待ち',preparing:'写真を確認中',sending:'送信中',saved:'保存済み',failed:'保存できませんでした'};
-  return `<p class="upload-summary" role="status">${busy?`${finished} / ${receiptUploads.length}枚の処理が完了`:`${receiptUploads.length}枚選択・${saved}枚保存済み`}</p><progress class="upload-progress" max="${receiptUploads.length}" value="${finished}" aria-label="写真の処理状況"></progress><ul class="upload-list">${receiptUploads.map(item=>`<li><div><span>${esc(item.name)}</span><strong>${labels[item.status]}</strong></div>${item.error?`<p class="negative">${esc(item.error)}</p>`:''}</li>`).join('')}</ul>`;
+  return `<p class="upload-summary" role="status">${summary}</p>${busy?`<progress class="upload-progress" max="${receiptUploads.length}" value="${finished}" aria-label="写真の処理状況"></progress>`:''}<ul class="upload-list">${receiptUploads.map(item=>`<li><div><span>${esc(item.name)}</span><strong>${labels[item.status]}</strong></div>${item.error?`<p class="negative">${esc(item.error)}</p>`:''}</li>`).join('')}</ul>`;
 }
 function updateReceiptUploads() {
   const progress=document.querySelector('#receipt-upload-progress');
@@ -386,9 +388,12 @@ async function uploadReceipts(retry=false) {
       }
       updateReceiptUploads();
     }
+    const saved=items.filter(item=>item.status==='saved').length;
+    receiptUploads=receiptUploads.filter(item=>item.status!=='saved');
     render();
     const failed=receiptUploads.filter(item=>item.status==='failed').length;
-    message(failed?`${failed}枚を保存できませんでした。写真ごとの表示を確認してください。`:'保存しました。',!!failed);
+    const savedMessage=saved?`${saved}枚の画像を保存しました。`:'';
+    message(failed?`${savedMessage}${failed}枚を保存できませんでした。写真ごとの表示を確認してください。`:savedMessage,!!failed);
   }finally{if(epoch===authEpoch)setBusy(false);}
 }
 async function showImage(id,trigger) {
