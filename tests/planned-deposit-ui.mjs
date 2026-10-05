@@ -65,16 +65,22 @@ try {
   await page.waitForFunction(()=>document.querySelectorAll('.monthly-form').length===2);
   await click('ホーム');
   const row=page.locator('.saving-row').filter({hasText:'予定額の積立'});
+  const openRow=async()=>{if(await row.getAttribute('open')===null)await row.locator('summary').click();};
+  assert.equal(await row.getAttribute('open'),null);
+  await openRow();
   const deposit=row.getByRole('button',{name:'この金額で入金'});
   assert.equal(await row.locator('.saving-plan strong').innerText(),'¥12,345');
-  assert.equal(await page.locator('.saving-row').filter({hasText:'ゼロ予定'}).getByRole('button',{name:'この金額で入金'}).isEnabled(),false);
+  assert.equal(await page.locator('.saving-row').filter({hasText:'ゼロ予定'}).getByRole('button',{name:'この金額で入金',includeHidden:true}).isEnabled(),false);
   await page.locator('#month').fill('2026-11');
+  await openRow();
   assert.equal(await deposit.isEnabled(),false);
   await row.getByText('予定額での入金は今月の表示で使えます。',{exact:false}).waitFor();
   await page.locator('#month').fill('2026-09');
+  await openRow();
   assert.equal(await deposit.isEnabled(),false);
   assert.equal((await state()).transfers.length,0);
   await page.locator('#month').fill('2026-10');
+  await openRow();
   // Hold the real demo save, then lose its response. Retry must use the same command.
   await page.evaluate(()=>{
     const t=globalThis.__householdTest.transport(),original=t.mutate;
@@ -105,12 +111,15 @@ try {
   assert.equal(data.transfers[0].date,'2026-10-05','Actual date uses today JST');
   assert.equal(data.transfers[0].month,'2026-10');
   assert.deepEqual(commands[0],commands[1],'Exact operation ID, revision, amount and date retained');
+  assert.equal(await row.locator('summary .saving-item-paid').innerText(),'入金済');
+  await openRow();
   assert.equal(await row.getByRole('button',{name:'入金済み'}).isEnabled(),false);
   assert.equal(await row.locator('strong.number').innerText(),'¥12,845');
   assert.equal(await page.locator('.big-money').innerText(),'¥-12,345');
   await click('入金・取り崩し');
   assert.equal(await page.locator('#transfer-form').isVisible(),true,'Intentional transfer action keeps transfer form');
   await click('ホーム');
+  await openRow();
   for(const width of [320,375,414,768]){
     await page.setViewportSize({width,height:844});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);

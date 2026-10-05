@@ -5,7 +5,7 @@ var HouseholdDomain = (function () {
   var CATEGORIES = Object.freeze(['食費', '酒', '趣味', '外食', '被服費', '美容', '積立', '必要経費', 'その他']);
   var PAYMENT_METHODS = Object.freeze(['cash', 'bank', 'card']);
   var TABLES = ['expenses', 'settings', 'plans', 'transfers', 'incomes', 'bills', 'receipts', 'operations'];
-  var BANK_FIXED_START_MONTH = '2026-10';
+  var FIXED_AUTO_START_MONTH = '2026-10';
 
   function fail(code, message) {
     var error = new Error(message);
@@ -190,7 +190,7 @@ var HouseholdDomain = (function () {
       oneOf(row.paymentMethod, PAYMENT_METHODS, '支払方法');
       oneOf(row.category, CATEGORIES, '分類');
       text(row.memo, 'メモ', false);
-      if (own(row, 'bankAutoHandled')) bool(row.bankAutoHandled, '銀行固定費の処理状態');
+      if (own(row, 'bankAutoHandled')) bool(row.bankAutoHandled, '固定費の処理状態');
     });
     var receiptLinks = new Map();
     state.receipts.forEach(function (row) {
@@ -309,15 +309,16 @@ var HouseholdDomain = (function () {
     state.plans.push(plan);
     return plan;
   }
-  function markBankPlan(state, id) {
+  function markFixedPlan(state, id) {
     var plan = id && state.plans.find(function (row) { return row.id === id; });
-    if (plan && plan.kind === 'fixed' && plan.paymentMethod === 'bank') plan.bankAutoHandled = true;
+    // Keep the persisted field name for compatibility; it now covers all methods.
+    if (plan && plan.kind === 'fixed') plan.bankAutoHandled = true;
   }
-  function payBankPlans(state, plans, context) {
+  function payFixedPlans(state, plans, context) {
     var today = todayJst(context.now);
     var created = [];
     plans.forEach(function (plan) {
-      if (plan.kind !== 'fixed' || plan.paymentMethod !== 'bank' || plan.month < BANK_FIXED_START_MONTH ||
+      if (plan.kind !== 'fixed' || plan.month < FIXED_AUTO_START_MONTH ||
           plan.month + '-01' > today || plan.plannedAmount === 0 || plan.bankAutoHandled) return;
       // Tombstones also count: deleting or moving an actual is a deliberate edit.
       var paid = state.expenses.some(function (row) {
@@ -326,7 +327,7 @@ var HouseholdDomain = (function () {
       if (!paid) {
         var actual = upsertExpense(state, {
           useDate: plan.month + '-01', accountingMonth: plan.month, amount: plan.plannedAmount,
-          category: plan.category, paymentMethod: 'bank', fixed: true,
+          category: plan.category, paymentMethod: plan.paymentMethod, fixed: true,
           description: plan.name, memo: plan.memo, settingId: plan.settingId, planId: plan.id
         }, context);
         created.push(actual.id);
@@ -335,17 +336,17 @@ var HouseholdDomain = (function () {
     });
     return created;
   }
-  function materializeMonth(state, p, context, bankOnly) {
+  function materializeMonth(state, p, context, fixedOnly) {
     var target = month(p.month);
     // A past view cannot reconstruct a plan from today's settings. Preserve only
     // snapshots actually recorded for that month, including missing settings.
     if (target >= todayJst(context.now).slice(0, 7)) {
       state.settings.filter(function (setting) {
-        return setting.active && (!bankOnly || (setting.kind === 'fixed' && setting.paymentMethod === 'bank'));
+        return setting.active && (!fixedOnly || setting.kind === 'fixed');
       }).forEach(function (setting) { snapshot(state, setting, target, context); });
     }
     var plans = state.plans.filter(function (plan) { return plan.month === target; });
-    payBankPlans(state, plans, context);
+    payFixedPlans(state, plans, context);
     return plans;
   }
   function saveSetting(state, p, context) {
@@ -362,7 +363,7 @@ var HouseholdDomain = (function () {
     if (old && row.kind !== old.kind) fail('CONFLICT', '設定種別は変更できません。別の設定を作成してください。');
     if (old && row.openingBalance !== old.openingBalance && state.transfers.some(function (transfer) { return transfer.settingId === old.id; })) fail('CONFLICT', '資金移動を記録した積立の開始残高は変更できません。');
     replace(state.settings, row);
-    if (!old && row.kind === 'fixed' && row.paymentMethod === 'bank' && row.active) {
+    if (!old && row.kind === 'fixed' && row.active) {
       materializeMonth(state, { month: todayJst(context.now).slice(0, 7) }, context, true);
     }
     return row;
@@ -386,13 +387,31 @@ var HouseholdDomain = (function () {
     if (old && old.deleted) fail('CONFLICT', '削除した明細は復活できません。新しい明細として登録してください。');
     var useDate = date(value(p, old, 'useDate', undefined));
     var method = oneOf(value(p, old, 'paymentMethod', 'cash'), PAYMENT_METHODS, '支払方法');
+    var settingId = optionalId(value(p, old, 'settingId', undefined), '固定費設定ID');
+    var planId = optionalId(value(p, old, 'planId', undefined), '固定費計画ID');
+    // Detachment must be resolved before choosing the fixed-cost date rule.
+    if (own(p, 'settingId') && !own(p, 'planId') && (!old || settingId !== old.settingId)) planId = undefined;
+    if (planId) {
+      var plan = byId(state.plans, planId, '固定費計画');
+      if (settingId && plan.settingId !== settingId) fail('INVALID_INPUT', '固定費の設定と計画が一致しません。');
+      settingId = plan.settingId;
+    }
+    var isFixed = bool(value(p, old, 'fixed', false), '固定費属性') || Boolean(settingId || planId);
+    if (isFixed) {
+      // An unchanged legacy fixed actual keeps its already recorded target month.
+      // Earlier card rules could have stored a purchase date in the previous month.
+      var fixedMonth = old && (old.fixed || old.settingId || old.planId) && useDate === old.useDate &&
+        (!own(p, 'accountingMonth') || p.accountingMonth === old.accountingMonth) ? old.accountingMonth : useDate.slice(0, 7);
+      useDate = fixedMonth + '-01';
+    }
     var recalculated = !old || useDate !== old.useDate || method !== old.paymentMethod;
-    var accounting = own(p, 'accountingMonth') ? month(p.accountingMonth) : recalculated ? method === 'card' ? cardMonth(useDate) : useDate.slice(0, 7) : old.accountingMonth;
+    var accounting = isFixed ? useDate.slice(0, 7) : own(p, 'accountingMonth') ? month(p.accountingMonth) : recalculated ? method === 'card' ? cardMonth(useDate) : useDate.slice(0, 7) : old.accountingMonth;
+    if (isFixed && own(p, 'accountingMonth') && month(p.accountingMonth) !== accounting) fail('INVALID_INPUT', '固定費は支払月の1日付・当月計上で記録してください。');
     var row = {
       id: old ? old.id : newId(state.expenses, p, context), useDate: useDate, accountingMonth: accounting,
       amount: amount(value(p, old, 'amount', undefined), '支出額', true),
       category: oneOf(value(p, old, 'category', 'その他'), CATEGORIES, '分類'), paymentMethod: method,
-      fixed: bool(value(p, old, 'fixed', false), '固定費属性'),
+      fixed: isFixed,
       description: text(value(p, old, 'description', ''), '内容', false, 2000),
       memo: text(value(p, old, 'memo', ''), 'メモ', false),
       manualEdited: Boolean(old && old.manualEdited), version: old ? add(old.version, 1) : 1
@@ -400,15 +419,6 @@ var HouseholdDomain = (function () {
     // Missing quantity stays unknown; an explicit null clears a previous value.
     var itemQuantity = value(p, old, 'quantity', undefined);
     if (itemQuantity != null) row.quantity = quantity(itemQuantity);
-    var settingId = optionalId(value(p, old, 'settingId', undefined), '固定費設定ID');
-    var planId = optionalId(value(p, old, 'planId', undefined), '固定費計画ID');
-    // An explicit setting change/detachment also detaches the previous plan.
-    if (own(p, 'settingId') && !own(p, 'planId') && (!old || settingId !== old.settingId)) planId = undefined;
-    if (planId) {
-      var plan = byId(state.plans, planId, '固定費計画');
-      if (settingId && plan.settingId !== settingId) fail('INVALID_INPUT', '固定費の設定と計画が一致しません。');
-      settingId = plan.settingId;
-    }
     if (settingId) {
       var setting = byId(state.settings, settingId, '固定費設定');
       if (setting.kind !== 'fixed') fail('INVALID_INPUT', '固定費には固定費設定を選んでください。');
@@ -427,14 +437,14 @@ var HouseholdDomain = (function () {
       row.receiptId = receiptId; row.receiptLineId = lineId; row.manualEdited = true;
       if (receipt.expenseIds.indexOf(row.id) < 0) receipt.expenseIds.push(row.id);
     }
-    if (old) markBankPlan(state, old.planId);
-    markBankPlan(state, row.planId);
+    if (old) markFixedPlan(state, old.planId);
+    markFixedPlan(state, row.planId);
     return replace(state.expenses, row);
   }
   function deleteExpense(state, p) {
     var row = byId(state.expenses, p.id || p.expenseId, '購入明細');
     if (state.transfers.some(function (transfer) { return transfer.expenseId === row.id; })) fail('CONFLICT', '関連する取り崩しを取り消してから明細を削除してください。');
-    markBankPlan(state, row.planId);
+    markFixedPlan(state, row.planId);
     if (!row.deleted) { row.deleted = true; row.version = add(row.version, 1); if (row.receiptId) row.manualEdited = true; }
     return row;
   }
@@ -592,6 +602,7 @@ var HouseholdDomain = (function () {
 
   // Server-owned catch-up. No operation log is needed: plan markers and linked
   // actuals are persisted together, and an unchanged load keeps its revision.
+  // Legacy API name retained for the installed daily trigger; all fixed methods apply.
   function reconcileBankFixedExpenses(input, options) {
     var state = copy(input);
     var context = Object.assign({}, options || {});
@@ -600,9 +611,9 @@ var HouseholdDomain = (function () {
     validateState(state, today);
     var before = JSON.stringify(state);
     var existingIds = new Set(state.expenses.map(function (row) { return row.id; }));
-    if (today.slice(0, 7) >= BANK_FIXED_START_MONTH) {
+    if (today.slice(0, 7) >= FIXED_AUTO_START_MONTH) {
       materializeMonth(state, { month: today.slice(0, 7) }, context, true);
-      payBankPlans(state, state.plans, context);
+      payFixedPlans(state, state.plans, context);
     }
     validateState(state, today);
     var changed = before !== JSON.stringify(state);

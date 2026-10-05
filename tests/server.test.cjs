@@ -19,15 +19,31 @@ function realDomain() {
   return context.HouseholdDomain;
 }
 
-function bankSnapshotState() {
+function bankSnapshotState(paymentMethod = 'bank') {
   const domain = realDomain();
   let counter = 0;
   const context = { now: '2026-09-20T03:00:00.000Z', uuid: () => `bank-seed-${++counter}` };
   let state = domain.execute(domain.emptyState(), { type: 'saveSetting', operationId: 'bank-setting', payload: {
-    id: 'bank-fixed', kind: 'fixed', name: '銀行固定費', plannedAmount: 3000, paymentMethod: 'bank', category: '必要経費'
+    id: 'bank-fixed', kind: 'fixed', name: '固定費', plannedAmount: 3000, paymentMethod, category: '必要経費'
   } }, context).state;
   return domain.execute(state, { type: 'materializeMonth', operationId: 'bank-october-plan', payload: { month: '2026-10' } }, context).state;
 }
+
+test('all fixed methods catch up atomically through load and the existing clock without duplicate retries', () => {
+  for (const method of ['cash', 'bank', 'card']) for (const fault of ['before', 'after']) {
+    const initial=bankSnapshotState(method);
+    const h=harness({domain:realDomain(),state:initial,now:'2026-10-05T03:00:00.000Z',batchFault:fault});
+    const session=h.login().session;
+    assert.throws(()=>h.call('rpc',{session,operation:'load'}));
+    const loaded=h.call('rpc',{session,operation:'load'});
+    assert.equal(loaded.expenses.length,1);assert.equal(loaded.expenses[0].paymentMethod,method);
+    assert.equal(loaded.expenses[0].useDate,'2026-10-01');assert.equal(loaded.expenses[0].accountingMonth,'2026-10');
+    const event={authMode:h.context.ScriptApp.AuthMode.FULL,triggerUid:'4034124084959907503',timezone:'Asia/Tokyo',year:2026,month:10,'day-of-month':5,hour:0,minute:10};
+    const batchCount=h.io.batches.length;assert.equal(h.call('processBankFixedExpensesDaily',event).created,0);
+    assert.equal(h.storedState().expenses.length,1);assert.equal(h.io.batches.length,batchCount);
+    assert.equal(h.io.lockTaken,h.io.lockReleased);
+  }
+});
 
 test('public clock entry rejects serialized, forged and missing native enums before all IO', () => {
   const h = harness({ domain: realDomain(), state: bankSnapshotState(), now: '2026-10-05T03:00:00.000Z' });
