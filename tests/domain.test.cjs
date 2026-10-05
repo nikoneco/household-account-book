@@ -166,7 +166,7 @@ test('UMD runs in a browser/GAS global and Node VM; empty states own their array
   first.expenses.push({ id: 'test' });
   assert.equal(D.emptyState().expenses.length, 0);
   assert.deepEqual(Object.keys(D.emptyState()), ['schemaVersion', 'revision', 'expenses', 'settings', 'plans', 'transfers', 'incomes', 'bills', 'receipts', 'operations']);
-  assert.deepEqual(plain(D.CATEGORIES), ['食費', '酒', '趣味', '外食', '必要経費', 'その他']);
+  assert.deepEqual(plain(D.CATEGORIES), ['食費', '酒', '趣味', '外食', '被服費', '美容', '積立', '必要経費', 'その他']);
 });
 
 test('27/28 card cutoff handles year boundaries and leap dates', () => {
@@ -498,7 +498,7 @@ test('one shopping receipt stores its merchant and individual products with quan
   assert.equal(summary.expenses, 960);
   assert.equal(summary.categories['酒'], 480);
   assert.equal(summary.categories['食費'], 480);
-  assert.deepEqual(Object.keys(summary.categories), ['食費', '酒', '趣味', '外食', '必要経費', 'その他']);
+  assert.deepEqual(Object.keys(summary.categories), ['食費', '酒', '趣味', '外食', '被服費', '美容', '積立', '必要経費', 'その他']);
   assert.equal(b.state.schemaVersion, 1);
   const retried = b.run('importReceipt', mixed({ merchant: '違う店', quantity: 99 }));
   assert.equal(retried.alreadyImported, true);
@@ -903,4 +903,33 @@ test('per-table indexes accept IDs matching object prototype names without mixin
   assert.equal(summary.cardTotal, 2200);
   assert.equal(summary.savingsPending, 800);
   assert.equal(summary.savings[0].balance, 49600);
+});
+
+test('new categories work for manual edits, fixed plans and mixed receipt imports without changing savings records', () => {
+  const b=book('2026-10-05T03:00:00.000Z');
+  saving(b);
+  expense(b,{category:'被服費',amount:3000});
+  b.run('upsertExpense',{id:'expense',category:'美容'});
+  fixed(b,{category:'積立',paymentMethod:'cash',plannedAmount:2000});
+  b.run('materializeMonth',{month:'2026-10'});
+  const plan=b.state.plans.find(p=>p.kind==='fixed');
+  assert.equal(plan.category,'積立');
+  b.run('upsertExpense',{id:'fixed-actual',useDate:'2026-10-05',amount:2000,category:'積立',paymentMethod:'cash',planId:plan.id,settingId:plan.settingId,fixed:true});
+  receipt(b);
+  const payload=mixed({useDate:'2026-10-05',paymentMethod:'cash',total:1200,lines:[
+    {lineId:'clothes',amount:400,category:'被服費',description:'靴下'},
+    {lineId:'beauty',amount:500,category:'美容',description:'化粧品'},
+    {lineId:'saving',amount:300,category:'積立',description:'分類の確認'}
+  ]});
+  b.run('importReceipt',payload);
+  b.run('importReceipt',payload);
+  const s=D.summarize(b.state,'2026-10');
+  assert.equal(s.categories['被服費'],400);
+  assert.equal(s.categories['美容'],3500);
+  assert.equal(s.categories['積立'],2300);
+  assert.equal(s.expenses,6200);
+  assert.equal(b.state.expenses.length,5);
+  assert.equal(b.state.transfers.length,0);
+  assert.equal(s.savingsDeposited,0);
+  assert.equal(s.savings[0].balance,50000);
 });

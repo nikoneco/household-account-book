@@ -2,7 +2,7 @@
 var HouseholdDomain = (function () {
   'use strict';
 
-  var CATEGORIES = Object.freeze(['食費', '酒', '趣味', '外食', '必要経費', 'その他']);
+  var CATEGORIES = Object.freeze(['食費', '酒', '趣味', '外食', '被服費', '美容', '積立', '必要経費', 'その他']);
   var PAYMENT_METHODS = Object.freeze(['cash', 'bank', 'card']);
   var TABLES = ['expenses', 'settings', 'plans', 'transfers', 'incomes', 'bills', 'receipts', 'operations'];
   var BANK_FIXED_START_MONTH = '2026-10';
