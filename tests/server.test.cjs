@@ -197,7 +197,7 @@ function harness(options = {}) {
 
 test('anonymous read, write, upload and image cannot touch Sheets or Drive', () => {
   const h = harness();
-  for (const operation of ['load', 'mutate', 'uploadReceipt', 'receiptImage']) {
+  for (const operation of ['sessionInfo', 'load', 'mutate', 'uploadReceipt', 'receiptImage']) {
     for (const session of [undefined, 'x', 'a'.repeat(64)]) assert.throws(() => h.call('rpc', { session, operation, payload: {} }), /AUTH_REQUIRED/);
   }
   assert.equal(h.io.sheet, 0); assert.equal(h.io.drive, 0);
@@ -274,6 +274,29 @@ test('session expiry and allowlist changes are checked before every data access'
   const second = h.login(); h.props.HOUSEHOLD_ALLOWED_EMAIL = 'replacement@example.test';
   assert.throws(() => h.call('rpc', { session: second.session, operation: 'load' }), /AUTH_REQUIRED/);
   assert.equal(h.io.sheet + h.io.drive, 0);
+});
+
+test('session restore validates role and expiry without ledger IO or extending lifetime', () => {
+  const h = harness(); const auth = h.login();
+  const key = 'session:' + hash(auth.session), before = h.cache.get(key).value;
+  const info = h.call('rpc', { session: auth.session, operation: 'sessionInfo' });
+  assert.deepEqual(clone(info), { role: 'editor', expiresAt: auth.expiresAt });
+  assert.equal(h.cache.get(key).value, before);
+  assert.ok(auth.expiresAt <= Date.now() + 3600000);
+  assert.equal(h.io.sheet + h.io.drive, 0);
+  h.props.HOUSEHOLD_ALLOWED_EMAIL = 'replacement@example.test';
+  h.props.HOUSEHOLD_VIEWER_EMAILS = 'wife@example.test';
+  assert.equal(h.call('rpc', { session: auth.session, operation: 'sessionInfo' }).role, 'viewer');
+  h.props.HOUSEHOLD_VIEWER_EMAILS = '';
+  assert.throws(() => h.call('rpc', { session: auth.session, operation: 'sessionInfo' }), /AUTH_REQUIRED/);
+  assert.equal(h.io.sheet + h.io.drive, 0);
+  const fresh = harness(); const saved = fresh.login();
+  const record = JSON.parse(fresh.cache.get('session:' + hash(saved.session)).value);
+  record.expiresAt = 1; fresh.cache.get('session:' + hash(saved.session)).value = JSON.stringify(record);
+  assert.throws(() => fresh.call('rpc', { session: saved.session, operation: 'sessionInfo' }), /AUTH_REQUIRED/);
+  const revoked = fresh.login(); fresh.call('authLogout', revoked.session);
+  assert.throws(() => fresh.call('rpc', { session: revoked.session, operation: 'sessionInfo' }), /AUTH_REQUIRED/);
+  assert.equal(fresh.io.sheet + fresh.io.drive, 0);
 });
 
 test('private initialization is explicit, only adds owned tables and preserves unrelated content', () => {

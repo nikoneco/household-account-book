@@ -14,7 +14,8 @@ await page.route('**/web/transport.js',r=>r.fulfill({contentType:'text/javascrip
 export function createTransport(){
  const t=createDemoTransport();
  const stage=name=>new Promise((resolve,reject)=>{globalThis.__stage=name;globalThis.__resolveStage=resolve;globalThis.__rejectStage=reject;});
- return {...t,prepareLogin:async()=>{await stage('prepare');return {state:'fixture'};},login:async()=>{await stage('exchange');return {role:'editor'};},load:async()=>{await stage('load');return t.load();}};
+ const snapshot=()=>({session:'a'.repeat(64),expiresAt:Date.now()+3500000,role:'editor'});
+ return {...t,prepareLogin:async()=>{await stage('prepare');return {state:'fixture'};},login:async()=>{await stage('exchange');return snapshot();},restore:async saved=>{await stage('restore');const deny=sessionStorage.getItem('fixture-deny');if(deny)throw Object.assign(new Error('ログインし直してください。'),{code:deny});return {...saved,role:'editor'};},load:async()=>{await stage('load');return t.load();}};
 }`}));
 await page.route('**/runtime-config.json',r=>r.fulfill({contentType:'application/json',body:JSON.stringify({mode:'google',clientId:'fixture',bridgeUrl:'https://script.google.com/macros/s/fixture/exec'})}));
 await page.route('https://accounts.google.com/gsi/client',r=>r.fulfill({contentType:'text/javascript',body:`globalThis.google={accounts:{oauth2:{initCodeClient:options=>({requestCode:()=>{globalThis.__loginCompletion=options.callback({code:'fixture'});}})}}};`}));
@@ -57,7 +58,53 @@ try{
  assert.equal(await page.locator('#navigation').isVisible(),true);
  assert.equal(await page.getByRole('heading',{name:'読み込み中'}).count(),0);
  await page.reload();
+ await stage('restore');await loading();assert.equal(await page.locator('#navigation').isVisible(),false);
+ await resolve();await stage('load');await loading();await resolve();
+ await page.getByText('今月の残り',{exact:true}).waitFor();
+ const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('household.session.v1')));
+ assert.deepEqual(Object.keys(saved).sort(),['expiresAt','session','target']);
+ assert.equal(saved.session,'a'.repeat(64));
+ // Invalid local expiry is removed without restoring; server rejections also remove it.
+ await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('household.session.v1'));value.expiresAt=1;localStorage.setItem('household.session.v1',JSON.stringify(value));});
+ await page.reload();await page.getByRole('heading',{name:'ログイン',exact:true}).waitFor();
+ assert.equal(await page.evaluate(()=>localStorage.getItem('household.session.v1')),null);
+ for(const denied of ['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED']){
+  await page.evaluate(({saved,denied})=>{localStorage.setItem('household.session.v1',JSON.stringify(saved));sessionStorage.setItem('fixture-deny',denied);},{saved,denied});
+  await page.reload();await stage('restore');await loading();await resolve();
+  await page.getByRole('heading',{name:'ログイン',exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>localStorage.getItem('household.session.v1')),null);
+ }
+ await page.evaluate(()=>sessionStorage.removeItem('fixture-deny'));
+ // The session can be revoked between restore and ledger load.
+ await page.evaluate(saved=>localStorage.setItem('household.session.v1',JSON.stringify(saved)),saved);
+ await page.reload();await stage('restore');await resolve();await stage('load');
+ await page.evaluate(()=>globalThis.__rejectStage(Object.assign(new Error('ログインし直してください。'),{code:'AUTH_REQUIRED'})));
  await page.getByRole('heading',{name:'ログイン',exact:true}).waitFor();
+ assert.equal(await page.evaluate(()=>localStorage.getItem('household.session.v1')),null);
+ // Explicit logout wins over every pending login stage and a pending restore.
+ for(const pending of ['prepare','exchange','load','restore']){
+  if(pending==='restore'){
+   await page.evaluate(saved=>localStorage.setItem('household.session.v1',JSON.stringify(saved)),saved);
+   await page.reload();await stage('restore');
+  }else{
+   await page.getByRole('button',{name:'Googleでログイン',exact:true}).click();
+   for(const name of ['prepare','exchange','load']){await stage(name);if(name===pending)break;await resolve();}
+  }
+  await loading();await page.evaluate(()=>globalThis.__oldResolve=globalThis.__resolveStage);
+  await page.locator('#logout').click();await page.getByRole('button',{name:'Googleでログイン',exact:true}).waitFor();
+  await page.evaluate(()=>globalThis.__oldResolve());
+  if(pending!=='restore')await page.evaluate(()=>globalThis.__loginCompletion);
+  await page.getByRole('heading',{name:'ログイン',exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>localStorage.getItem('household.session.v1')),null);
+  assert.equal(await page.locator('#navigation').isVisible(),false);
+  await page.reload();await page.getByRole('button',{name:'Googleでログイン',exact:true}).waitFor();
+ }
+ // Browser storage restrictions are nonfatal: login works for this page only.
+ await page.addInitScript(()=>Object.defineProperty(window,'localStorage',{get(){throw new DOMException('Storage unavailable','SecurityError');}}));
+ await page.reload();await page.getByRole('button',{name:'Googleでログイン',exact:true}).click();
+ for(const name of ['prepare','exchange','load']){await stage(name);await loading();await resolve();}
+ await page.getByText('今月の残り',{exact:true}).waitFor();
+ await page.reload();await page.getByRole('heading',{name:'ログイン',exact:true}).waitFor();
  assert.deepEqual(failures,[]);
- console.log('PASS: loading across prepare/exchange/load, no duplicate login/demo controls, errors at each stage restore retry, successful home, reload returns sign-in. Local fixtures only.');
+ console.log('PASS: staged login errors/loading; reload restores and reloads ledger; bounded session only; local expiry and server denials clear storage; logout wins over prepare/exchange/load/restore and reload; storage unavailable login; no page errors. Local fixtures only.');
 }finally{await browser.close();}

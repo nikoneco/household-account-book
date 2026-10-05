@@ -82,8 +82,10 @@ function rpc(request) {
   object_(request);
   // This check precedes every Sheets/Drive call, including malformed operations.
   var identity = authenticate_(request.session);
-  var allowed = ['load', 'mutate', 'uploadReceipt', 'receiptImage'];
+  var allowed = ['sessionInfo', 'load', 'mutate', 'uploadReceipt', 'receiptImage'];
   if (allowed.indexOf(request.operation) < 0) fail_('UNKNOWN_OPERATION', 'この操作には対応していません。');
+  // Restore authorization before touching any financial data. Never extend the expiry.
+  if (request.operation === 'sessionInfo') return { role: identity.role, expiresAt: identity.expiresAt };
   if (identity.role !== 'editor' && ['mutate', 'uploadReceipt'].indexOf(request.operation) >= 0) {
     fail_('FORBIDDEN', '閲覧アカウントでは変更できません。');
   }
@@ -520,7 +522,19 @@ function receiptFile_(receipt, folder) {
   privateItem_(file);
   var parents = file.getParents();
   var inFolder = false;
-  while (parents.hasNext()) if (parents.next().getId() === folder.getId()) inFolder = true;
+  var archiveId = PropertiesService.getScriptProperties().getProperty('HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID');
+  var inArchive = false;
+  while (parents.hasNext()) {
+    var parentId = parents.next().getId();
+    if (parentId === folder.getId()) inFolder = true;
+    if (archiveId && parentId === archiveId) inArchive = true;
+  }
+  if (!inFolder && inArchive) {
+    // The existing fileId remains authoritative after an archive move. Only
+    // the explicitly configured private archive is allowed alongside Pool.
+    privateItem_(DriveApp.getFolderById(archiveId));
+    inFolder = true;
+  }
   if (!inFolder) fail_('IMAGE_NOT_FOUND', '画像の保存先が一致しません。');
   return file;
 }

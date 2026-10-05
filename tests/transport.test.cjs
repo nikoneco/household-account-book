@@ -56,3 +56,78 @@ test('connection rejects invalid endpoint and close cancels pending work',async(
  await apiReady;assert.throws(()=>api.createTransport({bridgeUrl:'https://evil.example/exec'},{window:{},document:{},crypto:globalThis.crypto}),{code:'CONFIGURATION'});
  const h=harness();const waiting=h.transport.prepareLogin();h.transport.close();await assert.rejects(waiting,{code:'CLOSED'});
 });
+
+test('restore validates session on server before allowing ledger requests',async()=>{
+ await apiReady;const h=harness();h.ready();const saved={session:'a'.repeat(64),expiresAt:Date.now()+3600000};
+ const restored=h.transport.restore(saved);
+ await assert.rejects(h.transport.load(),{code:'UNAUTHENTICATED'});
+ await new Promise(resolve=>setImmediate(resolve));
+ const request=h.sent.at(-1).message;
+ assert.equal(request.method,'rpc');assert.equal(request.payload.operation,'sessionInfo');assert.equal(request.payload.session,saved.session);
+ h.respond(request,{role:'viewer',expiresAt:saved.expiresAt});
+ assert.deepEqual(await restored,{...saved,role:'viewer'});
+ h.onSend=message=>h.respond(message,{revision:0});await h.transport.load();
+ assert.equal(h.sent.at(-1).message.payload.operation,'load');h.transport.close();
+});
+
+test('logout prevents pending login and restore responses from reauthenticating',async()=>{
+ await apiReady;
+ for(const action of ['login','restore']){
+  const h=harness();h.ready();
+  const pending=action==='login'?h.transport.login('code','state'):h.transport.restore({session:'a'.repeat(64)});
+  await new Promise(resolve=>setImmediate(resolve));const request=h.sent.at(-1).message;
+  h.onSend=message=>h.respond(message,{loggedOut:true});
+  await h.transport.logout();
+  h.respond(request,{session:'a'.repeat(64),role:'editor',expiresAt:Date.now()+3600000});
+  await assert.rejects(pending,{code:'CLOSED'});await assert.rejects(h.transport.load(),{code:'UNAUTHENTICATED'});
+  h.transport.close();
+ }
+});
+
+test('logout during restore revokes the saved token before close; a fresh transport cannot restore it',async()=>{
+ await apiReady;const h=harness();h.ready();
+ const saved={session:'a'.repeat(64),expiresAt:Date.now()+3500000};
+ const serverSessions=new Set([saved.session]);
+ const serve=client=>message=>{
+  if(message.method==='authLogout'){
+   assert.equal(message.payload.session,saved.session);serverSessions.delete(message.payload.session);
+   client.respond(message,{loggedOut:true});
+  }else if(!serverSessions.has(message.payload.session)){
+   client.emit({type:'household:response',channel:client.channel,id:message.id,ok:false,error:{code:'AUTH_REQUIRED',message:'revoked'}});
+  }else client.respond(message,{role:'editor',expiresAt:saved.expiresAt});
+ };
+ const restoring=h.transport.restore(saved);
+ const rejected=assert.rejects(restoring,{code:'CLOSED'});
+ await new Promise(resolve=>setImmediate(resolve));const validation=h.sent.at(-1).message;
+ await assert.rejects(h.transport.load(),{code:'UNAUTHENTICATED'});
+ h.onSend=serve(h);await h.transport.logout();
+ assert.equal(h.sent.at(-1).message.method,'authLogout');assert.equal(serverSessions.size,0);
+ // Even a previously valid, late validation result cannot repopulate the client.
+ h.respond(validation,{role:'editor',expiresAt:saved.expiresAt});await rejected;
+ h.transport.close();
+ const fresh=harness();fresh.ready();fresh.onSend=serve(fresh);
+ await assert.rejects(fresh.transport.restore(saved),{code:'AUTH_REQUIRED'});
+ await assert.rejects(fresh.transport.load(),{code:'UNAUTHENTICATED'});fresh.transport.close();
+});
+
+test('an older restore rejection cannot clear a newer login or its pending restore token',async()=>{
+ await apiReady;const h=harness();h.ready();
+ const stale=h.transport.restore({session:'a'.repeat(64)});
+ const staleRejected=assert.rejects(stale,{code:'AUTH_REQUIRED'});
+ await new Promise(resolve=>setImmediate(resolve));const old=h.sent.at(-1).message;
+ h.onSend=message=>h.respond(message,{session:'b'.repeat(64),role:'editor',expiresAt:Date.now()+3500000});
+ await h.transport.login('code','state');
+ h.emit({type:'household:response',channel:h.channel,id:old.id,ok:false,error:{code:'AUTH_REQUIRED',message:'old rejection'}});
+ await staleRejected;
+ h.onSend=message=>h.respond(message,{revision:0});await h.transport.load();
+ assert.equal(h.sent.at(-1).message.payload.session,'b'.repeat(64));h.transport.close();
+ const fresh=harness();fresh.ready();
+ const first=fresh.transport.restore({session:'a'.repeat(64)});const firstRejected=assert.rejects(first,{code:'AUTH_REQUIRED'});
+ await new Promise(resolve=>setImmediate(resolve));const firstRequest=fresh.sent.at(-1).message;
+ const second=fresh.transport.restore({session:'b'.repeat(64)});const secondRejected=assert.rejects(second,{code:'CLOSED'});
+ await new Promise(resolve=>setImmediate(resolve));const secondRequest=fresh.sent.at(-1).message;
+ fresh.emit({type:'household:response',channel:fresh.channel,id:firstRequest.id,ok:false,error:{code:'AUTH_REQUIRED',message:'old rejection'}});await firstRejected;
+ fresh.onSend=message=>fresh.respond(message,{loggedOut:true});await fresh.transport.logout();
+ assert.equal(fresh.sent.at(-1).message.payload.session,'b'.repeat(64));
+ fresh.respond(secondRequest,{role:'editor',expiresAt:Date.now()+3500000});await secondRejected;fresh.transport.close();
+});

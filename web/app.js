@@ -1,4 +1,5 @@
 import { createTransport, createDemoTransport } from './transport.js';
+import { SESSION_STORAGE_KEY, readSession, saveSession, clearSession } from './session.js';
 
 const D = globalThis.HouseholdDomain;
 const CATEGORIES = ['食費', '酒', '趣味', '外食', '必要経費', 'その他'];
@@ -33,7 +34,7 @@ function formEnd(label='保存する',cancel='') { return `</div><div class="for
 function renderAuth() {
   closeDetail();
   document.querySelector('#navigation').hidden = true;
-  document.querySelector('#logout').hidden = true;
+  document.querySelector('#logout').hidden = !loginLoading;
   main.setAttribute('aria-busy',String(loginLoading));
   if(loginLoading){
     main.innerHTML='<section class="panel auth-panel"><h1>読み込み中</h1><p class="muted" role="status">家計簿を読み込んでいます…</p></section>';
@@ -224,6 +225,7 @@ async function loadSession(demo=false) {
   if(demo)transport.isDemo=true;
   render();
   await ensureMonth();
+  if(epoch!==authEpoch)return;
   if(!pendingCommand)message('');
 }
 function switchPage(next) {page=next;clearMessages();render();main.focus({preventScroll:true});window.scrollTo({top:0,behavior:'auto'});}
@@ -285,7 +287,7 @@ document.addEventListener('click',async event=>{
   const homeLink=event.target.closest('.brand');if(homeLink&&state){event.preventDefault();if(!busy&&!pendingCommand)switchPage('home');return;}
   const btn=event.target.closest('button');if(!btn)return;
   if(btn.id==='demo-login'){
-    try{authEpoch++;sessionRole='editor';transport?.close?.();transport=createDemoTransport();transport.isDemo=true;await loadSession(true);}catch(error){message(error.message,true);}return;
+    try{clearSession();authEpoch++;sessionRole='editor';transport?.close?.();transport=createDemoTransport();transport.isDemo=true;await loadSession(true);}catch(error){message(error.message,true);}return;
   }
   if(btn.id==='google-login'){googleClient?.requestCode();return;}
   if(btn.id==='logout'){await logout();return;}
@@ -345,25 +347,45 @@ async function showImage(id,trigger) {
     host.innerHTML=`<div class="image-panel"><div class="row-head"><h2>レシート画像</h2>${button('close-image','閉じる')}</div><img class="private-image" src="${esc(imageUrl)}" alt="保存したレシート画像"></div>`;host.scrollIntoView({block:'start'});
   }catch(error){
     if(epoch!==authEpoch||request!==imageRequest||!target.isConnected)return;
+    if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code)){await logout();message('ログインの有効期限が切れました。Googleでログインし直してください。',true);return;}
     const text=error.message||'画像を取得できませんでした。';
     if(target.id==='expense-detail'){const alert=document.createElement('p');alert.className='message error image-error';alert.setAttribute('role','alert');alert.textContent=text;target.append(alert);}
     else message(text,true);
   }finally{if(trigger?.isConnected){trigger.disabled=false;trigger.textContent=label;}}
 }
 async function logout() {
-  authEpoch++;closeImage();const previous=transport;
+  clearSession();authEpoch++;closeImage();const previous=transport;
   state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='home';tab='expense';busy=false;loginLoading=false;sessionRole='editor';
   main.replaceChildren();document.querySelector('#pending').hidden=true;document.querySelector('#mode-note').hidden=true;clearMessages();
   transport=null;renderAuth();
-  try{await previous?.logout?.();}catch{}finally{previous?.close?.();}
+  // Clear the UI/storage immediately even if the revocation request is slow/offline.
+  Promise.resolve(previous?.logout?.()).catch(()=>{}).finally(()=>previous?.close?.());
   try{await initializeConfig();}catch(error){message(error.message,true);}
 }
 async function initializeConfig() {
   const epoch=authEpoch;
   config=null;googleClient=null;loginPreparation=null;loginLoading=false;
-  try{const response=await fetch('./runtime-config.json',{cache:'no-store'});if(response.ok)config=await response.json();}catch{}
+  let nextConfig=null;
+  try{const response=await fetch('./runtime-config.json',{cache:'no-store'});if(response.ok)nextConfig=await response.json();}catch{}
+  if(epoch!==authEpoch)return;
+  config=nextConfig;
   if(config?.mode!=='google' || !config.clientId || !config.bridgeUrl){config=null;renderAuth();return;}
-  transport=createTransport(config);const loginTransport=transport;const loginConfig=config;renderAuth();
+  transport=createTransport(config);const loginTransport=transport;const loginConfig=config;
+  const saved=readSession(config);
+  if(saved){
+    loginLoading=true;renderAuth();
+    try{
+      const restored=await loginTransport.restore(saved);
+      if(epoch!==authEpoch)return;
+      sessionRole=restored.role;saveSession(loginConfig,restored);await loadSession();
+    }catch(error){
+      if(epoch!==authEpoch)return;
+      if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code))clearSession();
+      message(error.message||'家計簿を読み込めませんでした。通信を確認して再読み込みしてください。',true);
+    }finally{if(epoch===authEpoch)loginLoading=false;}
+    if(epoch!==authEpoch||state)return;
+  }
+  renderAuth();
   try{
     await new Promise((resolve,reject)=>{if(globalThis.google?.accounts?.oauth2){resolve();return;}const script=document.createElement('script');script.src='https://accounts.google.com/gsi/client';script.async=true;script.onload=resolve;script.onerror=()=>reject(new Error('Googleログインを読み込めませんでした。通信を確認して再読み込みしてください。'));document.head.append(script);});
     if(epoch!==authEpoch)return;
@@ -371,12 +393,15 @@ async function initializeConfig() {
       if(epoch!==authEpoch)return;
       if(result.error){message('Googleログインが完了しませんでした。もう一度お試しください。',true);return;}
       loginLoading=true;clearMessages();renderAuth();
-      try{loginPreparation=await loginTransport.prepareLogin();const loginResult=await loginTransport.login(result.code,loginPreparation.state);if(epoch!==authEpoch)return;sessionRole=loginResult.role||'editor';await loadSession();}
-      catch(error){if(epoch!==authEpoch)return;message(error.message||'ログインできませんでした。',true);}
+      try{loginPreparation=await loginTransport.prepareLogin();if(epoch!==authEpoch)return;const loginResult=await loginTransport.login(result.code,loginPreparation.state);if(epoch!==authEpoch)return;sessionRole=loginResult.role||'editor';saveSession(loginConfig,loginResult);await loadSession();}
+      catch(error){if(epoch!==authEpoch)return;if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code))clearSession();message(error.message||'ログインできませんでした。',true);}
       finally{if(epoch===authEpoch){loginLoading=false;if(!state)renderAuth();}}
     },error_callback:()=>message('ログイン画面が閉じられました。もう一度ログインできます。',true)});
     renderAuth();
   }catch(error){if(epoch===authEpoch){message(error.message,true);renderAuth();}}
 }
+window.addEventListener('storage',event=>{
+  if((event.key===SESSION_STORAGE_KEY && (!event.newValue || event.newValue==='null')) || event.key===null)logout();
+});
 await initializeConfig();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
