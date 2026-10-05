@@ -2,7 +2,7 @@ import { createTransport, createDemoTransport } from './transport.js';
 import { SESSION_STORAGE_KEY, readSession, saveSession, clearSession } from './session.js';
 
 const D = globalThis.HouseholdDomain;
-const CATEGORIES = ['食費', '酒', '趣味', '外食', '必要経費', 'その他'];
+const CATEGORIES = D.CATEGORIES;
 const PAYMENTS = {cash:'現金',bank:'銀行',card:'カード'};
 const main = document.querySelector('#main');
 const yen = value => '¥' + Number(value || 0).toLocaleString('ja-JP');
