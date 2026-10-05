@@ -219,9 +219,12 @@ try {
   await form('receipt-form').locator('[name=image]').setInputFiles({name:'sample.png',mimeType:'image/png',buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlFkAAAAASUVORK5CYII=','base64')});
   await form('receipt-form').getByRole('button',{name:'画像を保存'}).click();await waitSaved();
   assert.equal(await page.locator('#import-form').count(),0);
+  assert.equal(await page.locator('#saved-receipts').getAttribute('open'),null);
+  await page.locator('#saved-receipts>summary').click();
   await page.getByText('購入日：未確認',{exact:false}).waitFor();
   const receiptId=await page.evaluate(async()=>(await globalThis.__householdTest.transport().load()).receipts.at(-1).id);
   await click('画像を見る');await page.locator('.private-image').waitFor();
+  assert.equal(await page.locator('#saved-receipts-content .private-image').count(),1);
   await click('閉じる');
   const imported={receiptId,merchant:'ヨーカドー',useDate:'2026-10-04',paymentMethod:'cash',total:960,lines:[{lineId:'lemon',amount:130,quantity:1,category:'酒',description:'レモンサワー'},{lineId:'beer',amount:350,quantity:2,category:'酒',description:'一番搾り'},{lineId:'food',amount:480,quantity:1,category:'食費',description:'トンカツ'}]};
   await importFixture({...imported,total:999});

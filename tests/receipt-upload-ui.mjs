@@ -35,6 +35,7 @@ try{
  assert.equal(await page.locator('#receipt-camera').getAttribute('capture'),'environment');
  assert.equal(await page.locator('#receipt-files').getAttribute('multiple'),'');
  assert.equal(await page.getByRole('button',{name:'画像を保存',exact:true}).isEnabled(),false);
+ assert.equal(await page.locator('#saved-receipts').getAttribute('open'),null);
  await page.locator('#receipt-files').setInputFiles(files);
  await page.getByText('3枚選択',{exact:true}).waitFor();
  await click('画像を保存');
@@ -59,9 +60,16 @@ try{
  assert.equal(calls[1].id,calls[3].id);assert.equal(calls[1].hash,calls[3].hash);
  assert.equal(await page.evaluate(()=>globalThis.__maxUploads),1);
  assert.equal(await page.locator('.receipt-row').count(),3,'Lost success response does not create another receipt');
+ assert.equal(await page.locator('.receipt-row').first().isVisible(),false);
+ await page.locator('#saved-receipts>summary').focus();
+ await page.keyboard.press('Enter');
+ assert.equal(await page.locator('.receipt-row').first().isVisible(),true);
+ await page.locator('#saved-receipts>summary').focus();await page.keyboard.press('Space');
+ assert.equal(await page.locator('.receipt-row').first().isVisible(),false);
  await click('ホーム');await click('登録');await page.getByRole('tab',{name:'レシート',exact:true}).click();
  assert.equal(await page.locator('.upload-list').count(),0);
  assert.equal(await page.locator('.receipt-row').count(),3);
+ assert.equal(await page.locator('#saved-receipts').getAttribute('open'),null);
  await page.locator('#receipt-camera').setInputFiles(files[0]);
  await page.locator('#receipt-camera').setInputFiles(files[1]);
  await page.getByText('2枚選択',{exact:true}).waitFor();

@@ -112,7 +112,8 @@ function updateTransferBalance() {
   after.classList.toggle('negative',projected<0);
 }
 function receiptForm() {
-  return `<section class="panel"><h2>レシート画像を保存</h2><p class="muted">レシートに印字された購入日が読める写真を選んでください。</p><form id="receipt-form"><div class="receipt-pickers">${button('receipt-camera','カメラで撮る','','quiet')}${button('receipt-files','写真を選ぶ','','quiet')}<input id="receipt-camera" name="camera" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" hidden><input id="receipt-files" name="image" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></div><p class="hint">撮影を繰り返して追加できます。保存済みの写真は複数選べます。1枚8MBまで。</p><div id="receipt-upload-progress">${receiptUploadProgress()}</div><div class="form-actions receipt-actions"><button type="submit">画像を保存</button>${button('receipt-retry','失敗した写真を再送','','quiet')}${button('receipt-clear','選択をクリア','','quiet')}</div></form></section><section class="panel"><h2>保存したレシート</h2><p class="hint">購入日はレシートで確認できた日付です。保存日時とは別に表示します。</p>${renderReceipts()}</section>`;
+  const savedOpen=document.querySelector('#saved-receipts')?.open;
+  return `<section class="panel"><h2>レシート画像を保存</h2><p class="muted">レシートに印字された購入日が読める写真を選んでください。</p><form id="receipt-form"><div class="receipt-pickers">${button('receipt-camera','カメラで撮る','','quiet')}${button('receipt-files','写真を選ぶ','','quiet')}<input id="receipt-camera" name="camera" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" hidden><input id="receipt-files" name="image" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></div><p class="hint">撮影を繰り返して追加できます。保存済みの写真は複数選べます。1枚8MBまで。</p><div id="receipt-upload-progress">${receiptUploadProgress()}</div><div class="form-actions receipt-actions"><button type="submit">画像を保存</button>${button('receipt-retry','失敗した写真を再送','','quiet')}${button('receipt-clear','選択をクリア','','quiet')}</div></form></section><details id="saved-receipts" class="panel saved-receipts"${savedOpen?' open':''}><summary>保存したレシート</summary><div id="saved-receipts-content"><p class="hint">購入日はレシートで確認できた日付です。保存日時とは別に表示します。</p>${renderReceipts()}</div></details>`;
 }
 function receiptUploadProgress() {
   if(!receiptUploads.length)return '<p class="hint">写真を選ぶか、カメラで撮影してください。</p>';
@@ -425,7 +426,7 @@ async function uploadReceipts(retry=false) {
 }
 async function showImage(id,trigger) {
   clearMessages();const epoch=authEpoch;
-  const target=document.querySelector('#expense-detail')||main;const request=++imageRequest;
+  const target=document.querySelector('#expense-detail')||document.querySelector('#saved-receipts-content')||main;const request=++imageRequest;
   const label=trigger?.textContent;
   if(trigger){trigger.disabled=true;trigger.textContent='画像を読み込み中…';}
   target.querySelector('.image-error')?.remove();
