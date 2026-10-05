@@ -53,6 +53,8 @@ try {
   assert.equal(await page.evaluate(async()=>(await globalThis.__householdTest.transport().load()).revision),0,'Empty month must not cause a save');
   await page.locator('#month').fill('2026-10');
   await click('毎月の設定');
+  const totals=()=>page.locator('[data-setting-total]');
+  assert.deepEqual(await totals().allTextContents(),['¥0','¥0']);
   let f=form('setting-form');
   await f.locator('[name=kind]').selectOption('saving');
   await f.locator('[name=name]').fill('家電積立');
@@ -67,9 +69,16 @@ try {
   await f.getByRole('button',{name:'項目を追加'}).click();
   await page.waitForFunction(()=>document.querySelectorAll('.setting-row').length===2&&document.querySelector('#main').getAttribute('aria-busy')==='false');
   assert.equal(await page.locator('.monthly-form').count(),1,'Monthly list contains savings only');
+  assert.deepEqual(await totals().allTextContents(),['¥10,000','¥70,000']);
+  const rentSetting=page.locator('.setting-row').filter({hasText:'家賃'});
+  await rentSetting.getByRole('button',{name:'停止',exact:true}).click();await waitSaved();
+  assert.deepEqual(await totals().allTextContents(),['¥10,000','¥0']);
+  await rentSetting.getByRole('button',{name:'再開',exact:true}).click();await waitSaved();
+  assert.deepEqual(await totals().allTextContents(),['¥10,000','¥70,000']);
   await page.locator('.setting-row').filter({hasText:'家電積立'}).getByRole('button',{name:'編集',exact:true}).click();
   await form('setting-form').locator('[name=plannedAmount]').fill('11000');
   await form('setting-form').getByRole('button',{name:'設定を保存'}).click();await waitSaved();
+  assert.deepEqual(await totals().allTextContents(),['¥11,000','¥70,000']);
   assert.equal(await page.locator('.monthly-form').filter({hasText:'家電積立'}).locator('[name=plannedAmount]').inputValue(),'10000');
   await page.locator('#month').fill('2026-11');
   await page.waitForFunction(()=>document.querySelector('.monthly-form [name=plannedAmount]')?.value==='11000');
