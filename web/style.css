@@ -42,6 +42,9 @@ input[type=date]::-webkit-datetime-edit,input[type=month]::-webkit-datetime-edit
 .saving-plan{flex-wrap:wrap;gap:8px 14px}
 .settings-totals .account-line{flex-wrap:wrap;gap:8px 14px}
 .settings-totals strong{max-width:100%;overflow-wrap:anywhere}
+.saved-receipts>summary{cursor:pointer;min-height:44px;font-size:18px;font-weight:650;line-height:1.5}
+.saved-receipts>summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.saved-receipts[open]>summary{margin-bottom:16px}
 .saving-plan-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;min-width:0}
 .saving-plan-actions button:disabled{cursor:default}
 @media(max-width:640px){.saving-plan-actions{gap:8px}.saving-plan-actions strong{font-size:14px}}
