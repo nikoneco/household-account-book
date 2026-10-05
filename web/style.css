@@ -24,3 +24,18 @@ input[type=date]::-webkit-datetime-edit,input[type=month]::-webkit-datetime-edit
   .month-field input,input[type=date],input[type=month]{font-size:16px;padding-right:8px;padding-left:8px}
 }
 @media(max-width:350px){.form-grid{grid-template-columns:1fr}}
+.receipt-pickers{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.receipt-pickers button{white-space:normal;min-width:0}
+.receipt-actions{flex-wrap:wrap}
+.receipt-actions button[type=submit]{flex-basis:100%}
+.upload-summary{font-size:14px;margin:18px 0 8px;font-variant-numeric:tabular-nums}
+.upload-progress{display:block;width:100%;height:8px;border:0;border-radius:4px;overflow:hidden;background:var(--pale);accent-color:var(--sage)}
+.upload-progress::-webkit-progress-bar{background:var(--pale)}
+.upload-progress::-webkit-progress-value{background:var(--sage)}
+.upload-progress::-moz-progress-bar{background:var(--sage)}
+.upload-list{list-style:none;margin:12px 0 0;padding:0}
+.upload-list li{padding:10px 0;border-bottom:1px solid var(--line);font-size:12px}
+.upload-list li>div{display:flex;gap:12px;justify-content:space-between;align-items:baseline}
+.upload-list span{min-width:0;overflow-wrap:anywhere}
+.upload-list strong{flex-shrink:0;font-size:12px;font-weight:500}
+.upload-list p{margin:6px 0 0;overflow-wrap:anywhere}

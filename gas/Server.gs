@@ -585,7 +585,7 @@ function imageInput_(input) {
   if (['image/jpeg', 'image/png', 'image/webp'].indexOf(input.mimeType) < 0 ||
       typeof input.base64 !== 'string' || !input.base64.length ||
       input.base64.length > Math.ceil(HOUSEHOLD_MAX_IMAGE_ / 3) * 4 ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.base64)) {
+      !validImageBase64_(input.base64)) {
     fail_('INVALID_IMAGE', '8MB以下のJPEG・PNG・WebP画像を選んでください。');
   }
   var bytes;
@@ -597,6 +597,14 @@ function imageInput_(input) {
   var fileName = boundedString_(input.fileName, 160, 'INVALID_IMAGE').replace(/[\x00-\x1f\x7f/\\]/g, '_');
   return { bytes: bytes, hash: sha256Bytes_(bytes), fileName: fileName,
     extension: { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[actualMime] };
+}
+
+function validImageBase64_(value) {
+  if (value.length % 4 !== 0) return false;
+  var padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  // Repeated four-character regexp groups overflow V8's stack on phone-sized
+  // photos. Scan for invalid characters once, allowing padding only at the end.
+  return !/[^A-Za-z0-9+/]/.test(value.slice(0, value.length - padding));
 }
 
 function sniffImage_(bytes) {

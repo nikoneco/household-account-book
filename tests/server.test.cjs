@@ -365,6 +365,28 @@ test('atomic batch rejection changes no table; lost success response retry is id
   }
 });
 
+test('image validation accepts the full 8MiB limit without a regexp stack overflow', () => {
+  const h = harness();
+  const bytes = Buffer.alloc(8 * 1024 * 1024, 65);
+  jpeg.subarray(0, 3).copy(bytes);
+  bytes[bytes.length - 2] = 255; bytes[bytes.length - 1] = 217;
+  const result = h.call('imageInput_', upload('large-image', bytes));
+  assert.equal(result.bytes.length, bytes.length);
+  assert.equal(result.hash, hash(bytes));
+  assert.equal(h.io.sheet + h.io.drive, 0);
+});
+
+test('base64 validation rejects malformed padding and non-alphabet bytes before Drive IO', () => {
+  const h = harness();
+  for (const base64 of ['A', 'AAA', '=AAA', 'AA=A', 'A===', 'AAAA=', 'AA==AAAA', 'AAAA\n', 'AA-_', 'AAAA===']) {
+    assert.throws(() => h.call('imageInput_', { ...upload(), base64 }), /INVALID_IMAGE/);
+  }
+  for (const bytes of [jpeg, Buffer.concat([jpeg.subarray(0, -2), Buffer.from([0, 255, 217])]), Buffer.concat([jpeg.subarray(0, -2), Buffer.from([0, 0, 255, 217])])]) {
+    assert.equal(h.call('imageInput_', upload('padding-test', bytes)).hash, hash(bytes));
+  }
+  assert.equal(h.io.sheet + h.io.drive, 0);
+});
+
 test('same image upload reuses private file after failed Sheets commit and lost description write', () => {
   for (const options of [{ batchFault: 'before' }, { batchFault: 'after' }, { descriptionFault: true }]) {
     const h = harness(options); const session = h.login().session;
