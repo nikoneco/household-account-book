@@ -127,3 +127,11 @@ ChatGPTの通常実行はユーザー報告で4枚の画像取得・解析・She
 公開ChromeでユーザーがGoogleアカウントを選択し、新版のホーム表示と保存エラーなしを確認。その場で再読込すると「読み込み中」を経てホームへ復元し、Googleログインは要求されなかった。別タブで同じ公開URLを開き直しても同様にホームへ復元。新しいタブのerror/warnは0件、URL/title一致・非空・エラー画面なしを確認し、18-public-restored-session.pngを撮影。元のタブで登録→レシートを開き、4枚すべて解析待ち・購入日未確認であることを実表示でも確認。追加確認タブは閉じ、ログインは維持した。これにより上記のユーザー操作待ちは解消。期限を超えた実時間の待機、Safari実機の保存は未確認。
 
 確認コマンドはnpm test、npm run check、npm run build、tests/login-ui.mjs、tests/ui-flow.mjs、tests/layout-ui.mjs。公開確認はreload→DOM、別タブgoto→DOM、url/title、dev.logs、screenshot、登録→レシート→DOM。GASの4枚移動を先回りして実行せず、ユーザーのChatGPT再実験に残した。
+
+## 2026-10-05 実レシート4枚の反映・GAS移動成功
+
+ユーザーが最新版mdでChatGPTを1回実行し、4件を再解析・受取表へ保存した後、公開Chromeの家計簿を再読込。4件すべてInbox processed・Receipt imported・archiveStatus archived、errorなしをSheetsの範囲読取で確認。元のfileIdとファイル名を保った4枚すべての親が設定済み処理済フォルダだけであり、Pool所属なし・非共有をDriveメタデータでも確認。旧版の実GAS移動未確認は、この試験で解消した。ChatGPTからの移動操作は不要。
+
+有効な購入明細6件のIDは重複なし、すべてレシートの購入日・購入月で保存され、交通系マネーは現金扱い。公開履歴は4購入へまとめ、混在レシートの詳細で商品別の食費と酒を確認。処理済へ移動した元画像を履歴から開き、画像の読込完了と自然サイズが正であることを確認。実金額・店名・画像・個人用IDは公開記録へ含めず、実結果の読み戻しはignoredローカルへ保存。19-public-archived-receipt.pngは公開リポジトリ外の私有確認資料。
+
+さらに公開版を再読込し、ホーム復元後にInbox・Receipts・Expenses・Metaの同じ範囲を読み戻すと全4表が前回と一致。重複明細・再処理・追加revisionは発生しなかった。console履歴には今回より前のメッセージチャネル切断が残るが、今回の確認時刻に新しいerror/warnはなく、成功表示・画像の実表示・保存結果を個別に確認した。定期実行自体とSafari実機は引き続き未確認。
