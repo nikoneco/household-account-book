@@ -387,6 +387,26 @@ test('base64 validation rejects malformed padding and non-alphabet bytes before 
   assert.equal(h.io.sheet + h.io.drive, 0);
 });
 
+test('JPEG with appended motion-photo data keeps original bytes/hash, retries once and remains readable', () => {
+  const bytes = Buffer.concat([jpeg, Buffer.from([0, 0, 0, 24, 102, 116, 121, 112]), Buffer.alloc(512 * 1024, 42)]);
+  const h = harness({ batchFault: 'after' }); const session = h.login().session;
+  const request = { session, operation: 'uploadReceipt', payload: upload('motion-photo', bytes) };
+  assert.throws(() => h.call('rpc', request), /SAVE_FAILED/);
+  const response = h.call('rpc', request);
+  assert.equal(h.io.create, 1);
+  assert.equal(h.storedState().receipts.length, 1);
+  assert.equal(response.result.imageHash, hash(bytes));
+  assert.deepEqual(h.files.get(response.result.fileId).bytes, bytes);
+  const image = h.call('rpc', { session, operation: 'receiptImage', payload: { receiptId: response.result.id } });
+  assert.equal(image.dataUrl, 'data:image/jpeg;base64,' + bytes.toString('base64'));
+  const signed = Array.from(bytes, byte => byte > 127 ? byte - 256 : byte);
+  assert.equal(h.call('sniffImage_', signed), 'image/jpeg');
+  for (const broken of [jpeg.subarray(0, -2), Buffer.from([255, 216, 255]), Buffer.from([0, 216, 255, 255, 217])]) {
+    assert.throws(() => h.call('rpc', { session, operation: 'uploadReceipt', payload: upload('broken', broken) }), /INVALID_IMAGE/);
+  }
+  assert.equal(h.io.create, 1, 'Unrecognized/truncated input cannot create files');
+});
+
 test('same image upload reuses private file after failed Sheets commit and lost description write', () => {
   for (const options of [{ batchFault: 'before' }, { batchFault: 'after' }, { descriptionFault: true }]) {
     const h = harness(options); const session = h.login().session;

@@ -609,7 +609,13 @@ function validImageBase64_(value) {
 
 function sniffImage_(bytes) {
   function byte(i) { return bytes[i] & 255; }
-  if (bytes.length >= 4 && byte(0) === 255 && byte(1) === 216 && byte(2) === 255 && byte(bytes.length - 2) === 255 && byte(bytes.length - 1) === 217) return 'image/jpeg';
+  if (bytes.length >= 4 && byte(0) === 255 && byte(1) === 216 && byte(2) === 255) {
+    // A JPEG can retain metadata or motion-photo data after its end marker.
+    // Keep the original bytes, but still reject inputs with no end marker.
+    for (var i = 3; i < bytes.length - 1; i++) {
+      if (byte(i) === 255 && byte(i + 1) === 217) return 'image/jpeg';
+    }
+  }
   if (bytes.length >= 24 && [137, 80, 78, 71, 13, 10, 26, 10].every(function (v, i) { return byte(i) === v; }) &&
       [73, 72, 68, 82].every(function (v, i) { return byte(12 + i) === v; })) return 'image/png';
   if (bytes.length >= 16 && [82, 73, 70, 70].every(function (v, i) { return byte(i) === v; }) &&
