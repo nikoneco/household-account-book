@@ -13,6 +13,7 @@ const savedTime = value => value ? new Intl.DateTimeFormat('ja-JP',{timeZone:'As
 let month = today().slice(0,7), page = 'home', tab = 'expense', state = null, transport = null, config = null;
 let busy = false, loginLoading = false, pendingCommand = null, pendingSuccess = null, editing = null, settingEdit = null, loginPreparation = null, googleClient = null;
 let transferPreset = null, imageUrl = null, imageRequest = 0, authEpoch = 0, sessionRole = 'editor';
+let receiptUploads = [];
 const materialized = new Set();
 const list = key => (state?.[key] || []).filter(item => key !== 'expenses' || !item.deleted);
 const withdrawalRemaining = expense => expense.amount - list('transfers').filter(t=>t.kind==='withdrawal'&&t.expenseId===expense.id).reduce((sum,t)=>sum+t.amount,0);
@@ -106,7 +107,25 @@ function updateTransferBalance() {
   after.classList.toggle('negative',projected<0);
 }
 function receiptForm() {
-  return `<section class="panel"><h2>レシート画像を保存</h2><p class="muted">レシートに印字された購入日が読める写真を選んでください。</p><form id="receipt-form"><label>レシート画像<input name="image" type="file" accept="image/jpeg,image/png,image/webp" required></label><p class="hint">JPEG・PNG・WebP、8MBまで。</p><div class="form-actions"><button type="submit">画像を保存</button></div></form></section><section class="panel"><h2>保存したレシート</h2><p class="hint">購入日はレシートで確認できた日付です。保存日時とは別に表示します。</p>${renderReceipts()}</section>`;
+  return `<section class="panel"><h2>レシート画像を保存</h2><p class="muted">レシートに印字された購入日が読める写真を選んでください。</p><form id="receipt-form"><div class="receipt-pickers">${button('receipt-camera','カメラで撮る','','quiet')}${button('receipt-files','写真を選ぶ','','quiet')}<input id="receipt-camera" name="camera" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" hidden><input id="receipt-files" name="image" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></div><p class="hint">撮影を繰り返して追加できます。保存済みの写真は複数選べます。1枚8MBまで。</p><div id="receipt-upload-progress">${receiptUploadProgress()}</div><div class="form-actions receipt-actions"><button type="submit">画像を保存</button>${button('receipt-retry','失敗した写真を再送','','quiet')}${button('receipt-clear','選択をクリア','','quiet')}</div></form></section><section class="panel"><h2>保存したレシート</h2><p class="hint">購入日はレシートで確認できた日付です。保存日時とは別に表示します。</p>${renderReceipts()}</section>`;
+}
+function receiptUploadProgress() {
+  if(!receiptUploads.length)return '<p class="hint">写真はまだ選んでいません。</p>';
+  const finished=receiptUploads.filter(item=>['saved','failed'].includes(item.status)).length;
+  const saved=receiptUploads.filter(item=>item.status==='saved').length;
+  const labels={selected:'送信待ち',preparing:'写真を確認中',sending:'送信中',saved:'保存済み',failed:'保存できませんでした'};
+  return `<p class="upload-summary" role="status">${busy?`${finished} / ${receiptUploads.length}枚の処理が完了`:`${receiptUploads.length}枚選択・${saved}枚保存済み`}</p><progress class="upload-progress" max="${receiptUploads.length}" value="${finished}" aria-label="写真の処理状況"></progress><ul class="upload-list">${receiptUploads.map(item=>`<li><div><span>${esc(item.name)}</span><strong>${labels[item.status]}</strong></div>${item.error?`<p class="negative">${esc(item.error)}</p>`:''}</li>`).join('')}</ul>`;
+}
+function updateReceiptUploads() {
+  const progress=document.querySelector('#receipt-upload-progress');
+  if(progress)progress.innerHTML=receiptUploadProgress();
+  const form=document.querySelector('#receipt-form');if(!form)return;
+  form.querySelector('[type=submit]').disabled=busy||!!pendingCommand||!receiptUploads.some(item=>item.status==='selected');
+  for(const action of ['receipt-camera','receipt-files','receipt-clear','receipt-retry']){
+    const control=form.querySelector(`[data-action="${action}"]`);control.disabled=busy||!!pendingCommand;
+    if(action==='receipt-clear')control.hidden=!receiptUploads.length;
+    if(action==='receipt-retry')control.hidden=!receiptUploads.some(item=>item.status==='failed');
+  }
 }
 function renderReceipts() {
   return list('receipts').length?list('receipts').slice().reverse().map(r=>`<article class="receipt-row"><div class="row-head"><h3>${esc(r.fileName||'レシート')}</h3><span class="pill ${r.status==='needsReview'?'review':''}">${{pending:'解析待ち',needsReview:'確認待ち',imported:'取込済み',failed:'保存失敗'}[r.status]||esc(r.status)}</span></div><p class="muted">購入日：${esc(r.purchaseDate||'未確認')}<br>保存日時：${esc(savedTime(r.uploadedAt))}</p>${r.reason?`<p class="muted">${esc(r.reason)}</p>`:''}${r.archiveStatus==='archived'?'<p class="hint">処理済フォルダへ移動済み</p>':r.archiveStatus==='failed'?`<p class="notice">${esc(r.archiveError||'画像を移動できませんでした。')}<br>次に家計簿を開くと、画像の移動だけ再試行します。</p>`:''}${button('receipt-image','画像を見る',r.id)}${r.status==='needsReview' ? button('receipt-pending','再解析待ちにする',r.id) : ''}</article>`).join(''):'<div class="empty">保存したレシートは、ここに並びます。</div>';
@@ -187,6 +206,7 @@ function setBusy(value) {
   document.querySelectorAll('form button[type="submit"], [data-action="delete-expense"], [data-action="delete-transfer"], [data-action="toggle-setting"]').forEach(el=>el.disabled=value || !!pendingCommand);
   document.querySelector('#retry').disabled=value;
   main.setAttribute('aria-busy',String(value));
+  updateReceiptUploads();
 }
 async function mutate(type,payload,onSuccess=()=>render(),exact=null) {
   if (busy || (pendingCommand && !exact) || sessionRole==='viewer') return;
@@ -257,12 +277,17 @@ document.addEventListener('submit',async event=>{
   } else if(form.matches('[data-plan-id]')){
     const plan=list('plans').find(x=>x.id===form.dataset.planId);
     await mutate('savePlan',{...plan,plannedAmount:num(p.plannedAmount),memo:p.memo});
-  } else if(form.id==='receipt-form')await uploadReceipt(form);
+  } else if(form.id==='receipt-form')await uploadReceipts();
 });
 document.addEventListener('input',event=>{if(event.target.closest('#transfer-form'))updateTransferBalance();});
 
 document.addEventListener('change',async event=>{
   const el=event.target;
+  if(el.closest('#receipt-form') && el.type==='file'){
+    if(busy||pendingCommand)return;
+    receiptUploads.push(...Array.from(el.files||[],file=>({file,name:file.name,operationId:crypto.randomUUID(),status:'selected',payload:null,error:''})));
+    el.value='';clearMessages();updateReceiptUploads();return;
+  }
   if(el.id==='month'){
     if(busy||pendingCommand){el.value=month;message('処理中の保存を確認してから月を変えてください。',true);return;}
     if(!/^\d{4}-\d{2}$/.test(el.value))return;
@@ -302,6 +327,9 @@ document.addEventListener('click',async event=>{
   if(btn.dataset.page){switchPage(btn.dataset.page);return;}
   if(btn.dataset.tab){tab=btn.dataset.tab;render();return;}
   const action=btn.dataset.action,id=btn.dataset.id;
+  if(action==='receipt-camera'||action==='receipt-files'){document.querySelector(`#${action}`).click();return;}
+  if(action==='receipt-clear'){receiptUploads=[];updateReceiptUploads();clearMessages();return;}
+  if(action==='receipt-retry'){await uploadReceipts(true);return;}
   if(action==='expense-detail'){showExpenseDetail(id);return;}
   if(action==='close-detail'){closeDetail();return;}
   if(action==='toggle-income'){const panel=document.querySelector('#income-edit');panel.hidden=!panel.hidden;if(!panel.hidden)panel.querySelector('input').focus();}
@@ -321,21 +349,47 @@ document.addEventListener('click',async event=>{
   if(action==='receipt-pending')await mutate('setReceiptStatus',{id,status:'pending',reason:''});
 });
 
-async function uploadReceipt(form) {
-  const file=form.elements.image.files[0];
-  if(!file)return;
-  if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>8*1024*1024){message('JPEG・PNG・WebPの画像を8MB以内で選んでください。',true);return;}
-  setBusy(true);clearMessages();
-  const epoch=authEpoch;
+async function uploadReceipts(retry=false) {
+  if(busy||pendingCommand||sessionRole==='viewer')return;
+  const items=receiptUploads.filter(item=>item.status===(retry?'failed':'selected'));
+  if(!items.length)return;
+  const epoch=authEpoch,currentTransport=transport;
+  // Retain the ID and payload for uncertain responses; never resend successes.
+  items.forEach(item=>{item.status='selected';item.error='';});
+  clearMessages();setBusy(true);
   try{
-    const bytes=new Uint8Array(await file.arrayBuffer());
-    const digest=await crypto.subtle.digest('SHA-256',bytes);
-    const imageHash=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
-    let raw='';for(let i=0;i<bytes.length;i+=0x8000)raw+=String.fromCharCode(...bytes.subarray(i,i+0x8000));
-    if(epoch!==authEpoch)return;
-    setBusy(false);
-    await mutate('uploadReceipt',{imageHash,fileName:file.name,mimeType:file.type,base64:btoa(raw)});
-  }catch(error){message(error.message||'画像を保存できませんでした。画像は選択したままです。',true);}finally{setBusy(false);}
+    for(const item of items){
+      if(epoch!==authEpoch)return;
+      try{
+        if(!item.payload){
+          item.status='preparing';updateReceiptUploads();
+          const file=item.file;
+          if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>8*1024*1024)throw new Error('JPEG・PNG・WebPの画像を8MB以内で選んでください。');
+          const bytes=new Uint8Array(await file.arrayBuffer());
+          if(epoch!==authEpoch)return;
+          const digest=await crypto.subtle.digest('SHA-256',bytes);
+          if(epoch!==authEpoch)return;
+          const imageHash=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
+          let raw='';for(let i=0;i<bytes.length;i+=0x8000)raw+=String.fromCharCode(...bytes.subarray(i,i+0x8000));
+          item.payload={imageHash,fileName:file.name,mimeType:file.type,base64:btoa(raw),operationId:item.operationId};
+        }
+        item.status='sending';updateReceiptUploads();
+        const response=await currentTransport.uploadReceipt(item.payload);
+        if(epoch!==authEpoch)return;
+        state=response.state;item.status='saved';item.payload=null;item.file=null;
+      }catch(error){
+        if(epoch!==authEpoch)return;
+        item.status='failed';item.error=error.message||'保存結果を確認できませんでした。同じ写真で再送してください。';
+        if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code)){
+          await logout();message('ログインの有効期限が切れました。再ログイン後、未保存の写真を選んでください。',true);return;
+        }
+      }
+      updateReceiptUploads();
+    }
+    render();
+    const failed=receiptUploads.filter(item=>item.status==='failed').length;
+    message(failed?`${failed}枚を保存できませんでした。写真ごとの表示を確認してください。`:'保存しました。',!!failed);
+  }finally{if(epoch===authEpoch)setBusy(false);}
 }
 async function showImage(id,trigger) {
   clearMessages();const epoch=authEpoch;
@@ -359,6 +413,7 @@ async function showImage(id,trigger) {
   }finally{if(trigger?.isConnected){trigger.disabled=false;trigger.textContent=label;}}
 }
 async function logout() {
+  receiptUploads=[];
   clearSession();authEpoch++;closeImage();const previous=transport;
   state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='home';tab='expense';busy=false;loginLoading=false;sessionRole='editor';
   main.replaceChildren();document.querySelector('#pending').hidden=true;document.querySelector('#mode-note').hidden=true;clearMessages();
