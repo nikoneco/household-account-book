@@ -10,7 +10,7 @@ const today = () => new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:
 const monthLabel = value => `${Number(value.slice(0,4))}年${Number(value.slice(5,7))}月`;
 const savedTime = value => value ? new Intl.DateTimeFormat('ja-JP',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(value)) : '未確認';
 let month = today().slice(0,7), page = 'home', tab = 'expense', state = null, transport = null, config = null;
-let busy = false, pendingCommand = null, pendingSuccess = null, editing = null, settingEdit = null, loginPreparation = null, googleClient = null;
+let busy = false, loginLoading = false, pendingCommand = null, pendingSuccess = null, editing = null, settingEdit = null, loginPreparation = null, googleClient = null;
 let transferPreset = null, imageUrl = null, imageRequest = 0, authEpoch = 0, sessionRole = 'editor';
 const materialized = new Set();
 const list = key => (state?.[key] || []).filter(item => key !== 'expenses' || !item.deleted);
@@ -34,6 +34,11 @@ function renderAuth() {
   closeDetail();
   document.querySelector('#navigation').hidden = true;
   document.querySelector('#logout').hidden = true;
+  main.setAttribute('aria-busy',String(loginLoading));
+  if(loginLoading){
+    main.innerHTML='<section class="panel auth-panel"><h1>読み込み中</h1><p class="muted" role="status">家計簿を読み込んでいます…</p></section>';
+    return;
+  }
   main.innerHTML = `<section class="panel auth-panel"><h1>ログイン</h1><p class="muted">Googleアカウントでログインしてください。</p>${config ? `<button id="google-login" ${!googleClient ? 'disabled' : ''}>${googleClient ? 'Googleでログイン' : 'ログインを準備しています…'}</button>` : `<p class="notice">Google連携の準備が必要です。接続設定後にログインできます。</p>`}<div class="separator"><button id="demo-login" class="quiet">サンプルで試す</button><p class="hint">サンプルの入力は保存されず、終了すると消えます。</p></div></section>`;
 }
 
@@ -347,7 +352,7 @@ async function showImage(id,trigger) {
 }
 async function logout() {
   authEpoch++;closeImage();const previous=transport;
-  state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='home';tab='expense';busy=false;sessionRole='editor';
+  state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='home';tab='expense';busy=false;loginLoading=false;sessionRole='editor';
   main.replaceChildren();document.querySelector('#pending').hidden=true;document.querySelector('#mode-note').hidden=true;clearMessages();
   transport=null;renderAuth();
   try{await previous?.logout?.();}catch{}finally{previous?.close?.();}
@@ -355,7 +360,7 @@ async function logout() {
 }
 async function initializeConfig() {
   const epoch=authEpoch;
-  config=null;googleClient=null;loginPreparation=null;
+  config=null;googleClient=null;loginPreparation=null;loginLoading=false;
   try{const response=await fetch('./runtime-config.json',{cache:'no-store'});if(response.ok)config=await response.json();}catch{}
   if(config?.mode!=='google' || !config.clientId || !config.bridgeUrl){config=null;renderAuth();return;}
   transport=createTransport(config);const loginTransport=transport;const loginConfig=config;renderAuth();
@@ -365,7 +370,10 @@ async function initializeConfig() {
     googleClient=google.accounts.oauth2.initCodeClient({client_id:loginConfig.clientId,scope:'openid email profile',ux_mode:'popup',callback:async result=>{
       if(epoch!==authEpoch)return;
       if(result.error){message('Googleログインが完了しませんでした。もう一度お試しください。',true);return;}
-      try{loginPreparation=await loginTransport.prepareLogin();const loginResult=await loginTransport.login(result.code,loginPreparation.state);if(epoch!==authEpoch)return;sessionRole=loginResult.role||'editor';await loadSession();}catch(error){message(error.message||'ログインできませんでした。',true);}
+      loginLoading=true;clearMessages();renderAuth();
+      try{loginPreparation=await loginTransport.prepareLogin();const loginResult=await loginTransport.login(result.code,loginPreparation.state);if(epoch!==authEpoch)return;sessionRole=loginResult.role||'editor';await loadSession();}
+      catch(error){if(epoch!==authEpoch)return;message(error.message||'ログインできませんでした。',true);}
+      finally{if(epoch===authEpoch){loginLoading=false;if(!state)renderAuth();}}
     },error_callback:()=>message('ログイン画面が閉じられました。もう一度ログインできます。',true)});
     renderAuth();
   }catch(error){if(epoch===authEpoch){message(error.message,true);renderAuth();}}
