@@ -14,7 +14,7 @@ export function createTransport(config, environment = {}) {
   url.search = '';
   url.hash = '';
   url.searchParams.set('channel', channel);
-  let source, origin, session = '', closed = false;
+  let source, origin, session = '', restoringSession = null, closed = false, authVersion = 0;
   const pending = new Map();
   let readyResolve, readyReject;
   const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
@@ -44,7 +44,7 @@ export function createTransport(config, environment = {}) {
     pending.delete(data.id); clearTimeout(request.timer);
     if (data.ok) request.resolve(data.result);
     else {
-      if (['UNAUTHENTICATED', 'UNAUTHORIZED', 'AUTH_REQUIRED', 'AUTH_FORBIDDEN'].includes(data.error?.code)) session = '';
+      if (request.authVersion === authVersion && ['UNAUTHENTICATED', 'UNAUTHORIZED', 'AUTH_REQUIRED', 'AUTH_FORBIDDEN'].includes(data.error?.code)) session = '';
       request.reject(error(data.error?.code || 'SERVER', data.error?.message || '保存できませんでした。'));
     }
   }
@@ -52,6 +52,7 @@ export function createTransport(config, environment = {}) {
   doc.body.append(iframe);
   async function call(method, payload) {
     if (closed) throw error('CLOSED', '接続を終了しました。');
+    const requestAuthVersion = authVersion;
     await ready;
     if (closed) throw error('CLOSED', '接続を終了しました。');
     const id = random.randomUUID();
@@ -60,7 +61,7 @@ export function createTransport(config, environment = {}) {
         pending.delete(id);
         reject(error('TIMEOUT', '応答を確認できませんでした。同じ操作を再試行してください。'));
       }, timeoutMs);
-      pending.set(id, {resolve, reject, timer});
+      pending.set(id, {resolve, reject, timer, authVersion:requestAuthVersion});
       source.postMessage({type:'household:request', channel, id, method, payload}, origin);
     });
   }
@@ -79,18 +80,47 @@ export function createTransport(config, environment = {}) {
   return {
     prepareLogin: () => call('authPrepare', channel),
     async login(code, state) {
+      const version = ++authVersion;
       const result = await call('authLogin', {code, state, channel});
       if (!result || typeof result.session !== 'string') throw error('UNAUTHENTICATED', 'ログインを確認できませんでした。');
+      if (closed || version !== authVersion) {
+        if (!closed) call('authLogout', {session:result.session}).catch(() => {});
+        throw error('CLOSED', 'ログインを終了しました。');
+      }
       session = result.session;
-      return {expiresAt:result.expiresAt,role:result.role || 'editor'};
+      return {session,expiresAt:result.expiresAt,role:result.role || 'editor'};
     },
-    async logout() { const previous = session; session = ''; if (previous) await call('authLogout', {session:previous}); },
+    async restore(saved) {
+      const version = ++authVersion;
+      session = '';
+      // A known token can be revoked while validation is pending, but cannot run ledger RPCs.
+      const restoring = restoringSession = {session:saved.session,version};
+      try {
+        const result = await call('rpc', {session:saved.session,operation:'sessionInfo',payload:{}});
+        if (closed || version !== authVersion) throw error('CLOSED', 'ログインを終了しました。');
+        if (!result || !['editor','viewer'].includes(result.role) || !Number.isSafeInteger(result.expiresAt) || result.expiresAt <= Date.now()) {
+          throw error('UNAUTHENTICATED', 'Googleでログインし直してください。');
+        }
+        session = saved.session;
+        return {session,expiresAt:result.expiresAt,role:result.role};
+      } finally {
+        if (restoringSession === restoring) restoringSession = null;
+      }
+    },
+    async logout() {
+      authVersion++;
+      const previous = [...new Set([session,restoringSession?.session].filter(Boolean))];
+      session = ''; restoringSession = null;
+      const results = await Promise.allSettled(previous.map(value => call('authLogout', {session:value})));
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed) throw failed.reason;
+    },
     load: () => rpc('load', {}),
     mutate: command => durable('mutate', copy(command)),
     uploadReceipt: payload => durable('uploadReceipt', copy(payload)),
     receiptImage: receiptId => rpc('receiptImage', {receiptId}),
     close() {
-      closed = true; session = ''; clearTimeout(readyTimer);
+      closed = true; authVersion++; session = ''; restoringSession = null; clearTimeout(readyTimer);
       readyReject(error('CLOSED', '接続を終了しました。'));
       for (const item of pending.values()) { clearTimeout(item.timer); item.reject(error('CLOSED', '接続を終了しました。')); }
       pending.clear(); win.removeEventListener('message', onMessage); iframe.remove();
