@@ -5,6 +5,7 @@ var HouseholdDomain = (function () {
   var CATEGORIES = Object.freeze(['食費', '酒', '趣味', '外食', '必要経費', 'その他']);
   var PAYMENT_METHODS = Object.freeze(['cash', 'bank', 'card']);
   var TABLES = ['expenses', 'settings', 'plans', 'transfers', 'incomes', 'bills', 'receipts', 'operations'];
+  var BANK_FIXED_START_MONTH = '2026-10';
 
   function fail(code, message) {
     var error = new Error(message);
@@ -189,6 +190,7 @@ var HouseholdDomain = (function () {
       oneOf(row.paymentMethod, PAYMENT_METHODS, '支払方法');
       oneOf(row.category, CATEGORIES, '分類');
       text(row.memo, 'メモ', false);
+      if (own(row, 'bankAutoHandled')) bool(row.bankAutoHandled, '銀行固定費の処理状態');
     });
     var receiptLinks = new Map();
     state.receipts.forEach(function (row) {
@@ -307,13 +309,44 @@ var HouseholdDomain = (function () {
     state.plans.push(plan);
     return plan;
   }
-  function materializeMonth(state, p, context) {
+  function markBankPlan(state, id) {
+    var plan = id && state.plans.find(function (row) { return row.id === id; });
+    if (plan && plan.kind === 'fixed' && plan.paymentMethod === 'bank') plan.bankAutoHandled = true;
+  }
+  function payBankPlans(state, plans, context) {
+    var today = todayJst(context.now);
+    var created = [];
+    plans.forEach(function (plan) {
+      if (plan.kind !== 'fixed' || plan.paymentMethod !== 'bank' || plan.month < BANK_FIXED_START_MONTH ||
+          plan.month + '-01' > today || plan.plannedAmount === 0 || plan.bankAutoHandled) return;
+      // Tombstones also count: deleting or moving an actual is a deliberate edit.
+      var paid = state.expenses.some(function (row) {
+        return row.planId === plan.id || (row.settingId === plan.settingId && row.accountingMonth === plan.month);
+      });
+      if (!paid) {
+        var actual = upsertExpense(state, {
+          useDate: plan.month + '-01', accountingMonth: plan.month, amount: plan.plannedAmount,
+          category: plan.category, paymentMethod: 'bank', fixed: true,
+          description: plan.name, memo: plan.memo, settingId: plan.settingId, planId: plan.id
+        }, context);
+        created.push(actual.id);
+      }
+      plan.bankAutoHandled = true;
+    });
+    return created;
+  }
+  function materializeMonth(state, p, context, bankOnly) {
     var target = month(p.month);
     // A past view cannot reconstruct a plan from today's settings. Preserve only
     // snapshots actually recorded for that month, including missing settings.
-    if (target < todayJst(context.now).slice(0, 7)) return state.plans.filter(function (plan) { return plan.month === target; });
-    state.settings.filter(function (setting) { return setting.active; }).forEach(function (setting) { snapshot(state, setting, target, context); });
-    return state.plans.filter(function (plan) { return plan.month === target; });
+    if (target >= todayJst(context.now).slice(0, 7)) {
+      state.settings.filter(function (setting) {
+        return setting.active && (!bankOnly || (setting.kind === 'fixed' && setting.paymentMethod === 'bank'));
+      }).forEach(function (setting) { snapshot(state, setting, target, context); });
+    }
+    var plans = state.plans.filter(function (plan) { return plan.month === target; });
+    payBankPlans(state, plans, context);
+    return plans;
   }
   function saveSetting(state, p, context) {
     var old = p.id ? state.settings.find(function (row) { return row.id === p.id; }) : undefined;
@@ -328,7 +361,11 @@ var HouseholdDomain = (function () {
     if (target != null) row.targetAmount = target;
     if (old && row.kind !== old.kind) fail('CONFLICT', '設定種別は変更できません。別の設定を作成してください。');
     if (old && row.openingBalance !== old.openingBalance && state.transfers.some(function (transfer) { return transfer.settingId === old.id; })) fail('CONFLICT', '資金移動を記録した積立の開始残高は変更できません。');
-    return replace(state.settings, row);
+    replace(state.settings, row);
+    if (!old && row.kind === 'fixed' && row.paymentMethod === 'bank' && row.active) {
+      materializeMonth(state, { month: todayJst(context.now).slice(0, 7) }, context, true);
+    }
+    return row;
   }
   function savePlan(state, p) {
     var plan;
@@ -390,11 +427,14 @@ var HouseholdDomain = (function () {
       row.receiptId = receiptId; row.receiptLineId = lineId; row.manualEdited = true;
       if (receipt.expenseIds.indexOf(row.id) < 0) receipt.expenseIds.push(row.id);
     }
+    if (old) markBankPlan(state, old.planId);
+    markBankPlan(state, row.planId);
     return replace(state.expenses, row);
   }
   function deleteExpense(state, p) {
     var row = byId(state.expenses, p.id || p.expenseId, '購入明細');
     if (state.transfers.some(function (transfer) { return transfer.expenseId === row.id; })) fail('CONFLICT', '関連する取り崩しを取り消してから明細を削除してください。');
+    markBankPlan(state, row.planId);
     if (!row.deleted) { row.deleted = true; row.version = add(row.version, 1); if (row.receiptId) row.manualEdited = true; }
     return row;
   }
@@ -546,6 +586,26 @@ var HouseholdDomain = (function () {
     return { state: state, result: copy(storedResult) };
   }
 
+  // Server-owned catch-up. No operation log is needed: plan markers and linked
+  // actuals are persisted together, and an unchanged load keeps its revision.
+  function reconcileBankFixedExpenses(input, options) {
+    var state = copy(input);
+    var context = Object.assign({}, options || {});
+    context.now = timestamp(context.now);
+    var today = todayJst(context.now);
+    validateState(state, today);
+    var before = JSON.stringify(state);
+    var existingIds = new Set(state.expenses.map(function (row) { return row.id; }));
+    if (today.slice(0, 7) >= BANK_FIXED_START_MONTH) {
+      materializeMonth(state, { month: today.slice(0, 7) }, context, true);
+      payBankPlans(state, state.plans, context);
+    }
+    validateState(state, today);
+    var changed = before !== JSON.stringify(state);
+    if (changed) state.revision = add(state.revision, 1);
+    return { state: state, changed: changed, createdExpenseIds: state.expenses.filter(function (row) { return !existingIds.has(row.id); }).map(function (row) { return row.id; }) };
+  }
+
   function summarize(state, targetMonth) {
     month(targetMonth);
     validateState(state);
@@ -600,6 +660,6 @@ var HouseholdDomain = (function () {
     };
   }
 
-  return Object.freeze({ emptyState: emptyState, cardMonth: cardMonth, todayJst: todayJst, summarize: summarize, balance: balance, execute: execute, CATEGORIES: CATEGORIES, PAYMENT_METHODS: PAYMENT_METHODS });
+  return Object.freeze({ emptyState: emptyState, cardMonth: cardMonth, todayJst: todayJst, summarize: summarize, balance: balance, execute: execute, reconcileBankFixedExpenses: reconcileBankFixedExpenses, CATEGORIES: CATEGORIES, PAYMENT_METHODS: PAYMENT_METHODS });
 }());
 if (typeof module !== 'undefined' && module.exports) module.exports = HouseholdDomain;

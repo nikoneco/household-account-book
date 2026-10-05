@@ -39,3 +39,7 @@ input[type=date]::-webkit-datetime-edit,input[type=month]::-webkit-datetime-edit
 .upload-list span{min-width:0;overflow-wrap:anywhere}
 .upload-list strong{flex-shrink:0;font-size:12px;font-weight:500}
 .upload-list p{margin:6px 0 0;overflow-wrap:anywhere}
+.saving-plan{flex-wrap:wrap;gap:8px 14px}
+.saving-plan-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;min-width:0}
+.saving-plan-actions button:disabled{cursor:default}
+@media(max-width:640px){.saving-plan-actions{gap:8px}.saving-plan-actions strong{font-size:14px}}
