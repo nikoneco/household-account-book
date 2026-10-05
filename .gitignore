@@ -1,0 +1,10 @@
+.local/
+.clasp.json
+.clasprc.json
+*.local.*
+node_modules/
+dist/
+test-results/
+playwright-report/
+.env*
+!.env.example

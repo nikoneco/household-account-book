@@ -1,0 +1,10 @@
+{
+  "receiptId": "REPLACE_WITH_UPLOADED_RECEIPT_ID",
+  "useDate": "2026-10-05",
+  "paymentMethod": "cash",
+  "total": 2400,
+  "lines": [
+    {"lineId": "food-1", "amount": 1500, "category": "食費", "description": "食品（架空の例）"},
+    {"lineId": "alcohol-1", "amount": 900, "category": "酒", "description": "酒（架空の例）"}
+  ]
+}

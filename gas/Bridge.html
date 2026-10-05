@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>家計簿通信</title></head>
+<body>
+<script>
+'use strict';
+(() => {
+  const config = <?!= bridgeConfig ?>;
+  if (window.top === window) return;
+  const send = message => window.top.postMessage(message, config.origin);
+  const methods = new Set(['authPrepare', 'authLogin', 'authLogout', 'rpc']);
+  const active = new Set();
+  window.addEventListener('message', event => {
+    if (event.origin !== config.origin || event.source !== window.top) return;
+    const request = event.data;
+    if (!request || request.type !== 'household:request' || request.channel !== config.channel ||
+        typeof request.id !== 'string' || request.id.length > 100 || !methods.has(request.method) || active.has(request.id)) return;
+    active.add(request.id);
+    const reply = (ok, value) => {
+      active.delete(request.id);
+      send({ type: 'household:response', channel: config.channel, id: request.id,
+        ok, ...(ok ? { result: value } : { error: value }) });
+    };
+    const runner = google.script.run.withSuccessHandler(value => reply(true, value))
+      .withFailureHandler(error => {
+        // Never relay arbitrary Google/service errors that might contain IDs.
+        const message = String(error && error.message || '');
+        const match = message.match(/(?:^|\b)(AUTH_[A-Z_]+|NOT_CONFIGURED|NOT_INITIALIZED|STORE_[A-Z_]+|STORAGE_NOT_PRIVATE|INVALID_[A-Z_]+|IMAGE_NOT_FOUND|SAVE_FAILED|UPLOAD_FAILED|BUSY|FORBIDDEN|UNKNOWN_OPERATION|CONFLICT|REVISION_CONFLICT|NOT_FOUND|INSUFFICIENT_BALANCE|DUPLICATE_OPERATION|OPERATION_CONFLICT):\s*([^\r\n]*)/);
+        reply(false, match ? { code: match[1], message: match[2] } : { code: 'FAILED', message: '処理を確認できませんでした。再読み込みして確認してください。' });
+      });
+    try {
+      if (request.method === 'authPrepare') runner.authPrepare(config.channel);
+      else if (request.method === 'authLogin') {
+        const payload = request.payload || {};
+        runner.authLogin({ code: payload.code, state: payload.state, channel: config.channel });
+      } else if (request.method === 'authLogout') runner.authLogout(request.payload && request.payload.session);
+      else runner.rpc(request.payload);
+    } catch (error) { reply(false, { code: 'FAILED', message: '通信を初期化し直してください。' }); }
+  });
+  send({ type: 'household:ready', channel: config.channel });
+})();
+</script>
+</body>
+</html>

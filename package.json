@@ -1,0 +1,1 @@
+{"name":"household-account-book","version":"0.1.0","private":true,"type":"module","scripts":{"test":"node --test tests/*.test.cjs","start":"node tools/dev-server.mjs","build":"node tools/build.mjs","check":"node tools/check.mjs"},"engines":{"node":">=22"}}
