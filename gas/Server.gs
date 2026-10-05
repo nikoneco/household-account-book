@@ -93,7 +93,11 @@ function rpc(request) {
     var identity = authenticate_(request.session);
     if (identity.role !== 'editor' && ['mutate', 'uploadReceipt'].indexOf(request.operation) >= 0) fail_('FORBIDDEN', '閲覧アカウントでは変更できません。');
     var store = loadStore_();
-    if (request.operation === 'load') return clientState_(identity.role === 'editor' ? consumeInbox_(store) : store.state);
+    if (request.operation === 'load') {
+      // The financial/inbox transaction must finish before any Drive mutation.
+      var state = identity.role === 'editor' ? archiveImportedReceipts_(store, consumeInbox_(store)) : store.state;
+      return clientState_(state);
+    }
     if (request.operation === 'mutate') {
       object_(request.payload);
       // Drive file IDs and trusted receipt hashes can only enter via image upload.
@@ -416,7 +420,111 @@ function consumeInbox_(store) {
     } });
   });
   persistStore_(store, current, requests);
+  if (requests.length || current.revision !== store.state.revision) {
+    // persistStore_ writes compact rows after a successful inbox transaction.
+    store.archiveReceiptRows = [['id', 'json']].concat(current.receipts.map(function (receipt) { return [receipt.id, JSON.stringify(receipt)]; }));
+    store.archiveMetaRows = [['id', 'json'], ['meta', JSON.stringify({ id: 'meta', schemaVersion: current.schemaVersion, revision: current.revision })]];
+  }
   return current;
+}
+
+function archiveImportedReceipts_(store, state) {
+  var archiveId = PropertiesService.getScriptProperties().getProperty('HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID');
+  // Backward compatibility: an unset optional destination performs no Drive IO.
+  if (!archiveId) return state;
+  var imported = Object.create(null);
+  state.operations.forEach(function (operation) {
+    var result = operation.result;
+    if (operation.type === 'importReceipt' && /^inbox:/.test(operation.operationId) &&
+        /^[a-f0-9]{64}$/.test(operation.inboxHash || '') && result && result.receipt && !result.needsReview) {
+      imported[result.receipt.id] = true;
+    }
+  });
+  var candidates = state.receipts.filter(function (receipt) {
+    return imported[receipt.id] && receipt.status === 'imported' && receipt.expenseIds.length && receipt.archiveStatus !== 'archived';
+  });
+  // New imports are not held behind a backlog of repeatedly failing moves.
+  var attempt = function (receipt) { return Number.isSafeInteger(receipt.archiveAttempt) && receipt.archiveAttempt >= 0 && receipt.archiveAttempt <= state.revision ? receipt.archiveAttempt : 0; };
+  candidates.sort(function (a, b) { return Number(a.archiveStatus === 'failed') - Number(b.archiveStatus === 'failed') || attempt(a) - attempt(b); });
+  candidates = candidates.slice(0, 20);
+  if (!candidates.length) return state;
+  var next = JSON.parse(JSON.stringify(state));
+  var touched = [];
+  candidates.forEach(function (candidate) {
+    var receipt = next.receipts.find(function (item) { return item.id === candidate.id; });
+    var status = 'archived', reason = '';
+    try { archiveReceiptFile_(receipt, archiveId); }
+    catch (error) {
+      // Neither Drive responses nor exception strings may reveal IDs or tokens.
+      status = 'failed'; reason = '処理済フォルダへの移動を確認できませんでした。次の読み込みで再試行します。';
+    }
+    if (receipt.archiveStatus !== status || (receipt.archiveError || '') !== reason || receipt.archiveAttempt !== state.revision + 1) {
+      receipt.archiveStatus = status;
+      receipt.archiveError = reason;
+      receipt.archiveAttempt = state.revision + 1;
+      touched.push(receipt);
+    }
+  });
+  if (!touched.length) return state;
+  // If no inbox batch ran, physical rows may contain gaps. Update only the
+  // matching receipt JSON cells and metadata, never compact unrelated tables.
+  var receiptRows = store.archiveReceiptRows || store.rows.receipts;
+  var metaRows = store.archiveMetaRows || store.rows.meta;
+  next.revision++;
+  try {
+    var requests = touched.map(function (receipt) {
+      var row = receiptRows.findIndex(function (values) { return values[0] === receipt.id; });
+      if (row < 1) fail_('SAVE_FAILED', '画像の移動状態を保存できませんでした。');
+      return { updateCells: { range: { sheetId: store.sheets.receipts.getSheetId(), startRowIndex: row, endRowIndex: row + 1, startColumnIndex: 1, endColumnIndex: 2 },
+        rows: [{ values: [{ userEnteredValue: { stringValue: JSON.stringify(receipt) } }] }], fields: 'userEnteredValue' } };
+    });
+    var metaRow = metaRows.findIndex(function (values) { return values[0] === 'meta'; });
+    if (metaRow < 1) fail_('SAVE_FAILED', '画像の移動状態を保存できませんでした。');
+    requests.push({ updateCells: { range: { sheetId: store.sheets.meta.getSheetId(), startRowIndex: metaRow, endRowIndex: metaRow + 1, startColumnIndex: 1, endColumnIndex: 2 },
+      rows: [{ values: [{ userEnteredValue: { stringValue: JSON.stringify({ id: 'meta', schemaVersion: state.schemaVersion, revision: next.revision }) } }] }], fields: 'userEnteredValue' } });
+    Sheets.Spreadsheets.batchUpdate({ requests: requests }, store.id);
+  }
+  catch (error) {
+    // Ledger reads still succeed. The next load discovers actual parents even
+    // if the move, or its status write, succeeded with a lost response.
+    next.revision = state.revision;
+    touched.forEach(function (receipt) {
+      receipt.archiveStatus = 'failed';
+      receipt.archiveError = '移動状態を保存できませんでした。次の読み込みで確認します。';
+    });
+  }
+  return next;
+}
+
+function archiveReceiptFile_(receipt, archiveId) {
+  var folder = receiptFolder_();
+  if (archiveId === folder.getId()) fail_('ARCHIVE_FAILED', '処理済フォルダの設定を確認してください。');
+  var archive = DriveApp.getFolderById(archiveId);
+  privateItem_(archive);
+  if (archive.isTrashed()) fail_('ARCHIVE_FAILED', '処理済フォルダを確認してください。');
+  var file = receiptFile_(receipt, folder);
+  var iterator = file.getParents(), parents = [];
+  while (iterator.hasNext()) parents.push(iterator.next().getId());
+  var inPool = parents.indexOf(folder.getId()) >= 0;
+  var inArchive = parents.indexOf(archiveId) >= 0;
+  if (inArchive && !inPool) return;
+  if (!inPool) fail_('ARCHIVE_FAILED', '画像の保存先を確認してください。');
+  // Only Pool is removed; other parents, content, name and permissions remain.
+  // DriveApp.moveTo would remove every parent and is deliberately not used.
+  var url = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(receipt.fileId) +
+    '?removeParents=' + encodeURIComponent(folder.getId()) + '&fields=id%2Cparents';
+  if (!inArchive) url += '&addParents=' + encodeURIComponent(archiveId);
+  var response = UrlFetchApp.fetch(url, {
+    method: 'patch', headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    contentType: 'application/json', payload: '{}', muteHttpExceptions: true,
+    followRedirects: false, validateHttpsCertificates: true
+  });
+  if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) fail_('ARCHIVE_FAILED', '画像の移動を確認してください。');
+  var result = parseJson_(response.getContentText(), 'ARCHIVE_FAILED');
+  if (!result || result.id !== receipt.fileId || !Array.isArray(result.parents) || result.parents.indexOf(archiveId) < 0 ||
+      result.parents.indexOf(folder.getId()) >= 0 || parents.some(function (id) { return id !== folder.getId() && result.parents.indexOf(id) < 0; })) {
+    fail_('ARCHIVE_FAILED', '画像の移動を確認してください。');
+  }
 }
 
 function uploadReceipt_(store, input) {

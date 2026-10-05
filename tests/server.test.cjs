@@ -39,12 +39,13 @@ function harness(options = {}) {
     HOUSEHOLD_OAUTH_CLIENT_SECRET: 'server-secret', HOUSEHOLD_PWA_ORIGIN: 'https://example.github.io',
     ...(options.props || {})
   };
-  const io = { sheet: 0, drive: 0, create: 0, batches: [], batchReads: [], exchanges: [], lockTaken: 0, lockReleased: 0 };
+  const io = { sheet: 0, drive: 0, create: 0, batches: [], batchReads: [], exchanges: [], moves: [], lockTaken: 0, lockReleased: 0 };
   const cache = new Map();
   const sheets = new Map();
   let sequence = 1;
   let batchFault = options.batchFault;
   let descriptionFault = options.descriptionFault;
+  let archiveFault = options.archiveFault;
   let responseStatus = 200;
   let claims = { aud: props.HOUSEHOLD_OAUTH_CLIENT_ID, iss: 'https://accounts.google.com', exp: Math.floor(Date.now() / 1000) + 3600, sub: 'wife-sub', email: 'wife@example.test', email_verified: true };
   const blob = (value, type = 'application/octet-stream', name = '') => {
@@ -80,6 +81,7 @@ function harness(options = {}) {
   const files = new Map();
   const folder = {
     access: 'PRIVATE', editors: [], viewers: [], getId: () => 'private-folder',
+    isTrashed() { return Boolean(this.trashed); },
     getSharingAccess() { return this.access; }, getEditors() { return this.editors; }, getViewers() { return this.viewers; },
     getFilesByName(name) { io.drive++; return iterator(Array.from(files.values()).filter(file => file.name === name)); },
     createFile(value) {
@@ -97,6 +99,8 @@ function harness(options = {}) {
       return file;
     }
   };
+  const archiveFolder = { ...folder, getId: () => 'private-archive' };
+  const folders = new Map([[folder.getId(), folder], [archiveFolder.getId(), archiveFolder]]);
   const domain = {
     emptyState: empty,
     summarize() {},
@@ -125,6 +129,26 @@ function harness(options = {}) {
     Utilities: { getUuid: () => crypto.randomUUID(), newBlob: blob, base64Decode: value => Array.from(Buffer.from(value, 'base64')), base64DecodeWebSafe: value => Array.from(Buffer.from(value, 'base64url')), base64Encode: bytes => Buffer.from(bytes).toString('base64'), DigestAlgorithm: { SHA_256: 'sha256' }, computeDigest: (algorithm, bytes) => Array.from(crypto.createHash(algorithm).update(Buffer.from(bytes)).digest()) },
     UrlFetchApp: { fetch(url, request) {
       io.exchanges.push({ url, request: clone(request) });
+      if (url.startsWith('https://www.googleapis.com/drive/v3/files/')) {
+        io.moves.push({ url, request: clone(request) });
+        if (options.onArchive) options.onArchive({ sheets, files, io });
+        if (archiveFault === 'before') {
+          archiveFault = null;
+          return { getResponseCode: () => 403, getContentText: () => 'private-folder server-secret owner-token-sensitive' };
+        }
+        const parsed = new URL(url);
+        const file = files.get(decodeURIComponent(parsed.pathname.split('/').at(-1)));
+        assert.ok(file, 'move uses an existing original file');
+        assert.equal(request.method, 'patch'); assert.equal(request.payload, '{}');
+        assert.equal(parsed.searchParams.get('removeParents'), folder.getId());
+        file.parents = file.parents.filter(parent => parent.getId() !== parsed.searchParams.get('removeParents'));
+        const added = parsed.searchParams.get('addParents');
+        if (added) file.parents.push(folders.get(added));
+        if (archiveFault === 'after') { archiveFault = null; throw Error('owner-token-sensitive lost Drive response'); }
+        const result = { id: file.id, parents: file.parents.map(parent => parent.getId()) };
+        if (archiveFault === 'response') { archiveFault = null; result.parents = []; }
+        return { getResponseCode: () => 200, getContentText: () => JSON.stringify(result) };
+      }
       const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
       return { getResponseCode: () => responseStatus, getContentText: () => JSON.stringify({ id_token: encode({ alg: 'RS256' }) + '.' + encode(claims) + '.signature', access_token: 'NEVER-RETURN', refresh_token: 'NEVER-RETURN-REFRESH' }) };
     } },
@@ -158,7 +182,8 @@ function harness(options = {}) {
         const staged = next.get(update.range.sheetId);
         assert.ok(update.range.endRowIndex <= staged.maxRows, 'grid expansion precedes row writes');
         const sourceSheet = Array.from(sheets.values()).find(sheet => sheet.sid === update.range.sheetId);
-        assert.equal(update.range.startColumnIndex, sourceSheet.name === 'HB_ReceiptInbox' ? 2 : 0);
+        const jsonOnly = ['HB_Receipts', 'HB_Meta'].includes(sourceSheet.name) && update.range.startColumnIndex === 1;
+        assert.equal(update.range.startColumnIndex, jsonOnly ? 1 : sourceSheet.name === 'HB_ReceiptInbox' ? 2 : 0);
         assert.equal(update.range.endColumnIndex, sourceSheet.name === 'HB_ReceiptInbox' ? 4 : 2);
         for (let r = update.range.startRowIndex; r < update.range.endRowIndex; r++) {
           const relativeRow = r - update.range.startRowIndex;
@@ -175,7 +200,8 @@ function harness(options = {}) {
       for (const item of sheets.values()) Object.assign(item, next.get(item.sid));
       if (batchFault === 'after') { batchFault = null; throw Error('simulated lost commit response'); }
     } } },
-    DriveApp: { Access: { PRIVATE: 'PRIVATE' }, getFolderById(id) { io.drive++; assert.equal(id, 'private-folder'); return folder; }, getFileById(id) { io.drive++; if (!files.has(id)) throw Error('missing'); return files.get(id); } },
+    ScriptApp: { getOAuthToken: () => 'owner-token-sensitive' },
+    DriveApp: { Access: { PRIVATE: 'PRIVATE' }, getFolderById(id) { io.drive++; if (!folders.has(id)) throw Error('missing folder'); return folders.get(id); }, getFileById(id) { io.drive++; if (!files.has(id)) throw Error('missing'); return files.get(id); } },
     HtmlService: { XFrameOptionsMode: { ALLOWALL: 'ALLOWALL' }, createTemplateFromFile: () => ({ evaluate() { return { setTitle() { return this; }, setXFrameOptionsMode() { return this; } }; } }) }
   };
   vm.createContext(context);
@@ -192,7 +218,7 @@ function harness(options = {}) {
     result.revision = JSON.parse(sheets.get('HB_Meta').rows[1][1]).revision;
     return result;
   };
-  return { call, login, props, io, cache, sheets, folder, files, context, storedState, setClaims: value => { claims = { ...claims, ...value }; }, setStatus: value => { responseStatus = value; }, setBatchFault: value => { batchFault = value; } };
+  return { call, login, props, io, cache, sheets, folder, archiveFolder, folders, files, context, storedState, setClaims: value => { claims = { ...claims, ...value }; }, setStatus: value => { responseStatus = value; }, setBatchFault: value => { batchFault = value; }, setArchiveFault: value => { archiveFault = value; } };
 }
 
 test('anonymous read, write, upload and image cannot touch Sheets or Drive', () => {
@@ -636,6 +662,190 @@ test('oversized or malformed inbox values fail rows without blocking a later val
   f.load();
   for (const row of [oversized, malformedId, invalidReview]) assert.equal(f.inbox.rows[row][2], 'failed');
   assert.equal(f.inbox.rows[valid][2], 'processed'); assert.equal(f.h.storedState().expenses.length, 2);
+});
+
+test('archive moves only after atomic inbox commit; preserves original bytes, name, sharing and other parents', () => {
+  const f = receiptInbox({ props: { HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID: 'private-archive' }, onArchive({ sheets, io }) {
+    assert.equal(sheets.get('HB_ReceiptInbox').rows[1][2], 'processed');
+    assert.equal(sheets.get('HB_Expenses').getLastRow(), 3);
+    assert.equal(io.batches.at(-1).requests.some(request => request.updateCells.range.sheetId === sheets.get('HB_ReceiptInbox').sid), true);
+  } });
+  const row = f.append('archive-committed', f.payload);
+  const source = f.inbox.rows[row].slice(0, 2);
+  const file = f.h.files.get(f.receipt.fileId);
+  const other = { getId: () => 'unrelated-parent' };
+  file.parents.push(other);
+  const original = { id: file.id, bytes: Buffer.from(file.bytes), name: file.name, access: file.access };
+  const before = f.h.io.batches.length;
+  const state = f.load();
+  assert.equal(state.receipts[0].archiveStatus, 'archived'); assert.equal(state.receipts[0].archiveError, '');
+  assert.equal(state.receipts[0].fileId, original.id); assert.equal(file.id, original.id);
+  assert.deepEqual(file.bytes, original.bytes); assert.equal(file.name, original.name); assert.equal(file.access, original.access);
+  assert.deepEqual(file.parents.map(parent => parent.getId()), ['unrelated-parent', 'private-archive']);
+  assert.equal(file.trashed, false); assert.equal(f.h.io.create, 1); assert.equal(f.h.io.moves.length, 1);
+  assert.deepEqual(f.inbox.rows[row].slice(0, 2), source); assert.equal(f.inbox.rows[row][2], 'processed');
+  assert.equal(f.h.io.batches.length, before + 2);
+  assert.deepEqual(f.h.io.batches.at(-1).requests.map(request => request.updateCells.range.sheetId), [f.h.sheets.get('HB_Receipts').sid, f.h.sheets.get('HB_Meta').sid]);
+  const move = f.h.io.moves[0]; assert.equal(move.request.headers.Authorization, 'Bearer owner-token-sensitive');
+  assert.equal(move.request.followRedirects, false); assert.equal(move.request.validateHttpsCertificates, true);
+  assert.equal(move.request.muteHttpExceptions, true); assert.ok(!JSON.stringify(state).includes('owner-token-sensitive'));
+  const writes = f.h.io.batches.length; f.load();
+  assert.equal(f.h.io.moves.length, 1); assert.equal(f.h.io.batches.length, writes);
+  const image = f.h.call('rpc', { session: f.session, operation: 'receiptImage', payload: { receiptId: f.receipt.id } });
+  assert.equal(image.dataUrl, 'data:image/jpeg;base64,' + jpeg.toString('base64'));
+});
+
+test('optional archive unset, review/failed sources and viewer loads perform no archive IO', () => {
+  const f = receiptInbox(); f.append('no-archive-config', f.payload);
+  const drive = f.h.io.drive; const state = f.load();
+  assert.equal(f.h.io.drive, drive); assert.equal(state.receipts[0].archiveStatus, undefined);
+  const review = receiptInbox({ props: { HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID: 'private-archive' } });
+  review.append('review', { ...review.payload, total: 500 }); review.load();
+  assert.equal(review.h.io.moves.length, 0);
+  const failed = receiptInbox({ props: { HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID: 'private-archive' } });
+  failed.append('bad-json', '{'); failed.load(); assert.equal(failed.h.io.moves.length, 0);
+  f.h.props.HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID = 'private-archive';
+  f.h.props.HOUSEHOLD_VIEWER_EMAILS = 'viewer@example.test';
+  const session = f.h.login({ sub: 'viewer-sub', email: 'viewer@example.test' }).session;
+  const writes = f.h.io.batches.length, priorDrive = f.h.io.drive;
+  f.h.call('rpc', { session, operation: 'load' });
+  assert.equal(f.h.io.drive, priorDrive); assert.equal(f.h.io.batches.length, writes); assert.equal(f.h.io.moves.length, 0);
+});
+
+test('four already imported receipts without archive metadata move on the next editor load without ledger changes', () => {
+  const f = receiptInbox();
+  f.append('legacy-import-0', f.payload);
+  for (let index = 1; index < 4; index++) {
+    const bytes = Buffer.from([255, 216, 255, 224, 0, index + 2, 255, 217]);
+    const receipt = f.h.call('rpc', { session: f.session, operation: 'uploadReceipt', payload: upload('upload-' + index, bytes) }).result;
+    f.append('legacy-import-' + index, { ...f.payload, receiptId: receipt.id });
+  }
+  f.load(); const before = f.h.storedState(); const sources = clone(f.inbox.rows);
+  f.h.props.HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID = 'private-archive';
+  const state = f.load();
+  assert.equal(f.h.io.moves.length, 4); assert.ok(state.receipts.every(receipt => receipt.archiveStatus === 'archived'));
+  const after = f.h.storedState();
+  for (const key of keys.filter(key => key !== 'receipts')) assert.deepEqual(after[key], before[key]);
+  assert.deepEqual(f.inbox.rows, sources); assert.equal(after.revision, before.revision + 1);
+});
+
+test('archive-only saves address physical rows with gaps and leave every other table unchanged', () => {
+  const f = receiptInbox(); f.append('physical-first', f.payload);
+  const bytes = Buffer.from([255,216,255,224,0,8,255,217]);
+  const second = f.h.call('rpc', {session:f.session,operation:'uploadReceipt',payload:upload('physical-second',bytes)}).result;
+  f.append('physical-second', {...f.payload,receiptId:second.id}); f.load();
+  for(const name of ['HB_Receipts','HB_Meta','HB_Expenses','HB_Operations']) f.h.sheets.get(name).rows.splice(1,0,['','']);
+  f.h.sheets.get('HB_Receipts').rows.splice(3,0,['','']);
+  const before = new Map([...f.h.sheets].map(([name,sheet])=>[name,clone(sheet.rows)]));
+  f.h.props.HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID='private-archive';
+  const result=f.load(); assert.ok(result.receipts.every(r=>r.archiveStatus==='archived'));
+  for(const [name,sheet] of f.h.sheets){
+    const expected=before.get(name);
+    if(name==='HB_Receipts') for(const row of expected){if(row[0]&&row[0]!=='id'){const record=JSON.parse(row[1]);record.archiveStatus='archived';record.archiveError='';record.archiveAttempt=result.revision;row[1]=JSON.stringify(record);}}
+    if(name==='HB_Meta') for(const row of expected){if(row[0]==='meta'){const record=JSON.parse(row[1]);record.revision++;row[1]=JSON.stringify(record);}}
+    assert.deepEqual(sheet.rows,expected,name);
+  }
+  assert.deepEqual(f.h.io.batches.at(-1).requests.map(r=>r.updateCells.range.startRowIndex),[2,4,2]);
+  assert.ok(f.h.io.batches.at(-1).requests.every(r=>r.updateCells.range.startColumnIndex===1));
+});
+
+test('failed archive retries rotate beyond twenty permanently failing originals', () => {
+  const f=receiptInbox(); f.append('rotate-0',f.payload);
+  for(let index=1;index<21;index++){
+    const bytes=Buffer.from([255,216,255,224,0,index+2,255,217]);
+    const receipt=f.h.call('rpc',{session:f.session,operation:'uploadReceipt',payload:upload('rotate-upload-'+index,bytes)}).result;
+    f.append('rotate-'+index,{...f.payload,receiptId:receipt.id});
+  }
+  f.load();f.load();
+  const receiptSheet=f.h.sheets.get('HB_Receipts');
+  for(const row of receiptSheet.rows.slice(1)){const record=JSON.parse(row[1]);record.archiveStatus='failed';record.archiveError='retry';row[1]=JSON.stringify(record);}
+  const records=f.h.storedState().receipts;
+  for(const receipt of records.slice(0,20)) f.h.files.get(receipt.fileId).parents=[{getId:()=> 'permanent-foreign-parent'}];
+  const financial=clone(f.h.storedState().expenses),sources=clone(f.inbox.rows);
+  f.h.props.HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID='private-archive';
+  assert.equal(f.load().receipts[20].archiveStatus,'failed');assert.equal(f.h.io.moves.length,0);
+  const result=f.load();assert.equal(result.receipts[20].archiveStatus,'archived');assert.equal(f.h.io.moves.length,1);
+  assert.ok(result.receipts.slice(0,20).every(r=>r.archiveStatus==='failed'));
+  assert.deepEqual(f.h.storedState().expenses,financial);assert.deepEqual(f.inbox.rows,sources);
+});
+
+test('Drive rejection is sanitized and retry moves only; successful financial reads and sources survive', () => {
+  const f = receiptInbox({ props: { HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID: 'private-archive' }, archiveFault: 'before' });
+  const row = f.append('failed-move', f.payload); let state = f.load();
+  assert.equal(state.expenses.length, 2); assert.equal(f.inbox.rows[row][2], 'processed');
+  assert.equal(state.receipts[0].archiveStatus, 'failed');
+  assert.match(state.receipts[0].archiveError, /次の読み込み/);
+  assert.ok(!JSON.stringify(state).includes('server-secret')); assert.ok(!JSON.stringify(state).includes('owner-token-sensitive'));
+  const financial = clone(f.h.storedState().expenses), operations = clone(f.h.storedState().operations);
+  const source = clone(f.inbox.rows), before = f.h.io.batches.length;
+  state = f.load(); assert.equal(state.receipts[0].archiveStatus, 'archived'); assert.equal(f.h.io.moves.length, 2);
+  assert.deepEqual(f.h.storedState().expenses, financial); assert.deepEqual(f.h.storedState().operations, operations); assert.deepEqual(f.inbox.rows, source);
+  assert.equal(f.h.io.batches.length, before + 1);
+});
+
+test('financial atomic rejection or lost response never moves until a later successful load', () => {
+  for (const fault of ['before', 'after']) {
+    const f = receiptInbox({ props: { HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID: 'private-archive' } });
+    const row = f.append('no-premature-move', f.payload); f.h.setBatchFault(fault);
+    assert.throws(() => f.load(), /SAVE_FAILED/); assert.equal(f.h.io.moves.length, 0);
+    assert.deepEqual(f.h.files.get(f.receipt.fileId).parents.map(parent => parent.getId()), ['private-folder']);
+    const state = f.load(); assert.equal(state.expenses.length, 2); assert.equal(state.receipts[0].archiveStatus, 'archived');
+    assert.equal(f.inbox.rows[row][2], 'processed'); assert.equal(f.h.io.moves.length, 1);
+  }
+});
+
+test('already archived originals and lost Drive responses are recognized without another move', () => {
+  for (const scenario of ['already', 'after', 'response', 'both']) {
+    const f = receiptInbox({ props: { HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID: 'private-archive' } });
+    const file = f.h.files.get(f.receipt.fileId);
+    if (scenario === 'already') file.parents = [f.h.archiveFolder];
+    else if (scenario === 'both') file.parents.push(f.h.archiveFolder);
+    else f.h.setArchiveFault(scenario);
+    f.append('archive-' + scenario, f.payload); const state = f.load();
+    assert.equal(state.receipts[0].archiveStatus, scenario === 'after' || scenario === 'response' ? 'failed' : 'archived');
+    const moves = f.h.io.moves.length;
+    assert.equal(f.load().receipts[0].archiveStatus, 'archived'); assert.equal(f.h.io.moves.length, moves);
+    assert.deepEqual(file.parents.map(parent => parent.getId()), ['private-archive']);
+    if (scenario === 'both') assert.equal(new URL(f.h.io.moves[0].url).searchParams.get('addParents'), null);
+  }
+});
+
+test('archive status save failure keeps ledger readable and recovers the moved original on reload', () => {
+  for (const fault of ['before', 'after']) {
+    const f = receiptInbox({ props: { HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID: 'private-archive' } });
+    f.append('archive-status-save', f.payload);
+    // Inject only after the independent Drive request; inbox financial save succeeds.
+    f.h.context.UrlFetchApp.fetch = ((original) => (url, request) => {
+      const response = original(url, request);
+      if (url.startsWith('https://www.googleapis.com/drive/')) f.h.setBatchFault(fault);
+      return response;
+    })(f.h.context.UrlFetchApp.fetch);
+    const state = f.load(); assert.equal(state.expenses.length, 2); assert.equal(state.receipts[0].archiveStatus, 'failed');
+    assert.match(state.receipts[0].archiveError, /状態を保存/); assert.equal(f.inbox.rows[1][2], 'processed');
+    assert.equal(f.h.io.moves.length, 1); const operations = clone(f.h.storedState().operations);
+    assert.equal(f.load().receipts[0].archiveStatus, 'archived'); assert.equal(f.h.io.moves.length, 1);
+    assert.deepEqual(f.h.storedState().operations, operations);
+  }
+});
+
+test('unsafe archive storage, missing/trash/shared file and foreign parents refuse move without losing imports', () => {
+  for (const unsafe of ['same-folder', 'missing-folder', 'shared-folder', 'folder-viewer', 'trash-folder', 'shared-file', 'file-editor', 'trash-file', 'missing-file', 'foreign-parent']) {
+    const f = receiptInbox({ props: { HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID: 'private-archive' } });
+    const file = f.h.files.get(f.receipt.fileId);
+    if (unsafe === 'same-folder') f.h.props.HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID = 'private-folder';
+    if (unsafe === 'missing-folder') f.h.props.HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID = 'missing-folder';
+    if (unsafe === 'shared-folder') f.h.archiveFolder.access = 'ANYONE';
+    if (unsafe === 'folder-viewer') f.h.archiveFolder.viewers = ['viewer'];
+    if (unsafe === 'trash-folder') f.h.archiveFolder.trashed = true;
+    if (unsafe === 'shared-file') file.access = 'ANYONE';
+    if (unsafe === 'file-editor') file.editors = ['editor'];
+    if (unsafe === 'trash-file') file.trashed = true;
+    if (unsafe === 'missing-file') f.h.files.delete(file.id);
+    if (unsafe === 'foreign-parent') file.parents = [{ getId: () => 'foreign-folder' }];
+    f.append('unsafe-' + unsafe, f.payload); const state = f.load();
+    assert.equal(state.expenses.length, 2, unsafe); assert.equal(state.receipts[0].archiveStatus, 'failed', unsafe);
+    assert.equal(f.h.io.moves.length, 0, unsafe); assert.equal(f.inbox.rows[1][2], 'processed', unsafe);
+  }
 });
 
 test('bridge checks exact top origin and channel, routes narrow methods, hides unknown service errors', () => {

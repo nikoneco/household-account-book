@@ -30,15 +30,18 @@ test('save reports precise nonsecret reasons and detects discarded writes',async
  const api=await apiReady,items=new Map();
  globalThis.localStorage={getItem:key=>items.get(key)||null,setItem:(key,value)=>items.set(key,value),removeItem:key=>items.delete(key)};
  const valid={session:'a'.repeat(64),expiresAt:Date.now()+3500000};
- for(const [value,reason] of [[{...valid,session:'invalid'},'token'],[{...valid,expiresAt:String(valid.expiresAt)},'number'],[{...valid,expiresAt:1},'late'],[{...valid,expiresAt:Date.now()+3601500},'too_far']]){
+ for(const [value,reason] of [[{...valid,session:'invalid'},'token'],[{...valid,expiresAt:String(valid.expiresAt)},'number'],[{...valid,expiresAt:1},'late'],[{...valid,expiresAt:Date.now()+3960000},'too_far']]){
   const result=api.saveSession(config,value);
   assert.deepEqual(result,{saved:false,reason});assert.equal(items.size,0);
   assert.deepEqual(Object.keys(result).sort(),['reason','saved']);
  }
- // A slight server/client offset reproduces the current upper-bound rejection;
- // this diagnostic test deliberately preserves that behavior pending real observation.
- assert.equal(api.validSession({...valid,expiresAt:3600001},0),false);
+ // Server/client clock skew must not silently discard a newly issued one-hour session.
+ assert.equal(api.validSession({...valid,expiresAt:3900001},0),false);
+ assert.equal(api.validSession({...valid,expiresAt:3900000},0),true);
  assert.equal(api.validSession({...valid,expiresAt:3600000},0),true);
+ const skewed={...valid,expiresAt:Date.now()+3601500};
+ assert.deepEqual(api.saveSession(config,skewed),{saved:true,reason:'stored'});
+ assert.deepEqual(api.readSession(config),skewed);
  globalThis.localStorage={getItem:()=>null,setItem:()=>{},removeItem:()=>{}};
  assert.deepEqual(api.saveSession(config,valid),{saved:false,reason:'storage-not-retained'});
  delete globalThis.localStorage;

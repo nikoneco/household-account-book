@@ -83,7 +83,7 @@ Google認証後の準備・コード交換・記録取得中は「読み込み�
 
 後続の運用はChatGPTが1日1回、非公開Driveの画像を解析し、Sheetsの `HB_ReceiptInbox` へ直接結果を書き込む方式です。家計簿の明細テーブルへ直接追記せず、専用受取表へ追記します。家計簿を編集可能なアカウントで読み込むと、サーバーが最大20行ずつ検証して明細・処理状態を一括反映します。スプシへの結果保存と家計簿への反映は別の段階です。既に開いている画面は再読み込みで反映します。
 
-取込JSONの例は [docs/receipt-example.json](docs/receipt-example.json)、スケジュール登録用の文面と列の扱いは [docs/SCHEDULE_PROMPT.md](docs/SCHEDULE_PROMPT.md) にあります。実運用版の接続先URLは非公開Driveのmdだけに記載します。ChatGPTは明細への反映完了を確認してから同じファイルIDの元画像をPoolから処理済へ移動する手順です。GASの任意設定 `HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID` で指定した非公開フォルダの画像は、移動後も履歴から表示できます。実際のChatGPTでの画像読取・Sheets書込・移動・定期実行は未接続・未検証です。有料AI APIやGASの定期トリガーは導入していません。
+取込JSONの例は [docs/receipt-example.json](docs/receipt-example.json)、スケジュール登録用の文面と列の扱いは [docs/SCHEDULE_PROMPT.md](docs/SCHEDULE_PROMPT.md) にあります。実運用版の接続先URLは非公開Driveのmdだけに記載します。ChatGPTは解析結果を受取表へ保存し、画像移動はGASが明細の取込成功後に行います。GASの任意設定 `HOUSEHOLD_RECEIPT_ARCHIVE_FOLDER_ID` で指定した非公開フォルダへ元のfileIdのまま移動し、履歴の画像表示を保ちます。移動だけ失敗した場合は次回の編集者の読込で移動だけ再試行します。通常チャットの画像読取とSheets書込はユーザー報告で成功し、移動は403で拒否されたためGASへ移しました。GASの自動移動とChatGPTの定期実行の実試験は別工程です。有料AI APIやGASの定期トリガーは導入していません。
 
 ## データ構造
 
