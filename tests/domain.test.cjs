@@ -357,6 +357,9 @@ test('savings accumulate independently of monthly surplus and track planned vers
   assert.equal(s.salaryOutflow, 35000);
   assert.equal(s.monthlyRemaining, 165000);
   assert.equal(s.categories['食費'], 30000);
+  assert.equal(s.outflowCategories['食費'], 25000);
+  assert.equal(s.outflowCategories['積立'], 10000);
+  assert.equal(Object.values(s.outflowCategories).reduce((n,value)=>n+value,0),s.salaryOutflow);
   assert.equal(s.savings[0].balance, 55000);
   assert.equal(D.summarize(b.state, '2026-11').salaryExpenses, 0);
   assert.equal(D.summarize(b.state, '2026-11').monthlyRemaining, 0);
@@ -382,10 +385,14 @@ test('salary remainder excludes saving-funded purchases, counts deposits, and ig
   assert.equal(s.salaryOutflow, 20000);
   assert.equal(s.monthlyRemaining, 280000, 'Unlinked withdrawal must not count as salary income');
   assert.equal(s.savings[0].balance, 10000);
+  assert.equal(s.outflowCategories['食費'], 0);
+  assert.equal(s.outflowCategories['積立'], 20000);
+  assert.equal(Object.values(s.outflowCategories).reduce((n,value)=>n+value,0),s.salaryOutflow);
   assert.equal(D.summarize(b.state, '2026-11').monthlyRemaining, 0, 'No surplus carryover');
   b.run('deleteTransfer', { id: 'unlinked' });
   b.run('deleteTransfer', { id: 'withdrawal' });
   assert.equal(D.summarize(b.state, '2026-10').monthlyRemaining, -220000);
+  assert.equal(D.summarize(b.state, '2026-10').outflowCategories['食費'],500000);
 });
 
 test('partial cash funding covers its purchase month, not the withdrawal month', () => {
@@ -400,6 +407,52 @@ test('partial cash funding covers its purchase month, not the withdrawal month',
   assert.equal(D.summarize(b.state, '2026-11').savingsWithdrawn, 8000);
   assert.equal(D.summarize(b.state, '2026-11').monthlyRemaining, 0);
   assert.equal(D.summarize(b.state, '2026-10').savingsPending, 12000);
+  assert.equal(D.summarize(b.state, '2026-10').outflowCategories['食費'],12000);
+  assert.equal(Object.values(D.summarize(b.state,'2026-11').outflowCategories).reduce((n,value)=>n+value,0),0);
+});
+
+test('outflow breakdown includes deposit-only months and actual saving-category expenses, independent of setting category and plans', () => {
+  const b=book('2026-10-31T03:00:00.000Z');saving(b,{category:'必要経費'});
+  b.run('materializeMonth',{month:'2026-10'});
+  let s=D.summarize(b.state,'2026-10');
+  assert.equal(s.savingsPlanned,20000);assert.equal(s.outflowCategories['積立'],0);
+  deposit(b,{amount:10000});
+  s=D.summarize(b.state,'2026-10');
+  assert.equal(s.expenses,0);assert.equal(s.outflowCategories['積立'],10000);assert.equal(s.outflowCategories['必要経費'],0);
+  expense(b,{category:'積立',amount:1500});
+  expense(b,{id:'fixed-saving',category:'必要経費',amount:10000,fixed:true,description:'定額貯金'});
+  b.options.now='2026-11-02T03:00:00.000Z';
+  deposit(b,{id:'nov-deposit',date:'2026-11-01',amount:4000});
+  s=D.summarize(b.state,'2026-10');
+  assert.equal(s.outflowCategories['積立'],11500);assert.equal(s.outflowCategories['必要経費'],10000);
+  assert.equal(s.categories['積立'],1500,'purchase-only summary remains compatible');
+  assert.deepEqual(plain(s.outflowItems.map(item=>[item.description,item.category,item.amount])),[['積立','積立',1500],['定額貯金','必要経費',10000],['旅行積立','積立',10000]]);
+  assert.equal(Object.values(s.outflowCategories).reduce((n,value)=>n+value,0),s.salaryOutflow);
+  assert.equal(D.summarize(b.state,'2026-11').outflowCategories['積立'],4000);
+  b.run('deleteTransfer',{id:'deposit'});
+  assert.equal(D.summarize(b.state,'2026-10').outflowCategories['積立'],1500);
+  b.run('deleteExpense',{id:'expense'});
+  assert.equal(D.summarize(b.state,'2026-10').outflowCategories['積立'],0);
+});
+
+test('outflow breakdown follows card billing month and actual partial funding, without changing purchase or bill totals', () => {
+  const b=book();saving(b);
+  expense(b,{category:'必要経費',paymentMethod:'card',useDate:'2026-10-28',amount:10000,fundingSettingId:'saving'});
+  assert.equal(D.summarize(b.state,'2026-10').outflowCategories['必要経費'],0);
+  let s=D.summarize(b.state,'2026-12');
+  assert.equal(s.outflowCategories['必要経費'],10000,'designation without withdrawal stays in salary outflow');
+  withdrawal(b,{date:'2026-12-01',amount:4000});
+  withdrawal(b,{id:'unlinked',date:'2026-12-01',amount:1000,expenseId:''});
+  deposit(b,{date:'2026-12-01',amount:2000});
+  s=D.summarize(b.state,'2026-12');
+  assert.equal(s.outflowCategories['必要経費'],6000);assert.equal(s.outflowCategories['積立'],2000);
+  assert.equal(s.cardTotal,10000);assert.equal(s.categories['必要経費'],10000);
+  assert.equal(s.outflowItems.find(item=>item.kind==='purchase').amount,6000);
+  assert.equal(s.outflowItems.find(item=>item.kind==='purchase').savingsCovered,4000);
+  assert.equal(Object.values(s.outflowCategories).reduce((n,value)=>n+value,0),s.salaryOutflow);
+  withdrawal(b,{id:'rest',date:'2026-12-02',amount:6000});
+  assert.equal(D.summarize(b.state,'2026-12').outflowCategories['必要経費'],0);
+  assert.equal(D.summarize(b.state,'2026-12').outflowItems.filter(item=>item.kind==='purchase').length,0);
 });
 
 test('purchase-linked withdrawals validate cumulative amount, saving kind and funding selection', () => {

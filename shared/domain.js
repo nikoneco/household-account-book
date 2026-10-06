@@ -646,8 +646,22 @@ var HouseholdDomain = (function () {
     var salaryExpenses = add(expenseTotal, -savingsFunded);
     var salaryOutflow = add(salaryExpenses, savingsDeposited);
     var monthlyRemaining = add(income, -salaryOutflow);
-    var categories = {};
-    CATEGORIES.forEach(function (category) { categories[category] = sum(expenses.filter(function (expense) { return expense.category === category; }), 'amount'); });
+    var categories = {}, outflowCategories = {}, outflowItems = [];
+    CATEGORIES.forEach(function (category) { categories[category] = 0; outflowCategories[category] = 0; });
+    expenses.forEach(function (expense) {
+      categories[expense.category] = add(categories[expense.category], expense.amount);
+      var covered = withdrawnByExpense.get(expense.id) || 0;
+      var fromSalary = add(expense.amount, -covered);
+      outflowCategories[expense.category] = add(outflowCategories[expense.category], fromSalary);
+      if (fromSalary > 0) outflowItems.push({ id: expense.id, kind: 'purchase', category: expense.category, date: expense.useDate, description: expense.description || expense.category, amount: fromSalary, purchaseAmount: expense.amount, savingsCovered: covered });
+    });
+    outflowCategories['積立'] = add(outflowCategories['積立'], savingsDeposited);
+    transfers.forEach(function (transfer) {
+      if (transfer.kind !== 'deposit') return;
+      var plan = plans.find(function (entry) { return entry.settingId === transfer.settingId; });
+      var setting = state.settings.find(function (entry) { return entry.id === transfer.settingId; });
+      outflowItems.push({ id: transfer.id, kind: 'deposit', category: '積立', date: transfer.date, description: plan ? plan.name : setting.name, amount: transfer.amount });
+    });
     var pendingFunding = expenses.filter(function (expense) { return expense.fundingSettingId; }).map(function (expense) {
       var withdrawn = withdrawnByExpense.get(expense.id) || 0;
       return { expenseId: expense.id, settingId: expense.fundingSettingId, amount: expense.amount, withdrawn: withdrawn, pending: add(expense.amount, -withdrawn), accountingMonth: expense.accountingMonth, useDate: expense.useDate, paymentMethod: expense.paymentMethod, description: expense.description };
@@ -671,7 +685,7 @@ var HouseholdDomain = (function () {
       savingsPending: sum(pendingFunding, 'pending'), savingsFunded: savingsFunded, salaryExpenses: salaryExpenses,
       salaryOutflow: salaryOutflow, monthlyRemaining: monthlyRemaining, confirmedAmount: bill ? bill.confirmedAmount : null,
       billDifference: bill ? add(bill.confirmedAmount, -cardTotal) : null,
-      categories: categories, savings: savings, plans: copy(plans), pendingFunding: pendingFunding
+      categories: categories, outflowCategories: outflowCategories, outflowItems: outflowItems, savings: savings, plans: copy(plans), pendingFunding: pendingFunding
     };
   }
 
