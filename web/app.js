@@ -14,6 +14,7 @@ let month = today().slice(0,7), page = 'register', tab = 'receipt', state = null
 let busy = false, loginLoading = false, pendingCommand = null, pendingSuccess = null, editing = null, settingEdit = null, loginPreparation = null, googleClient = null;
 let transferPreset = null, imageUrl = null, imageRequest = 0, authEpoch = 0, sessionRole = 'editor';
 let receiptUploads = [];
+let restoreRetry = false;
 const materialized = new Set();
 const list = key => (state?.[key] || []).filter(item => key !== 'expenses' || !item.deleted);
 const withdrawalRemaining = expense => expense.amount - list('transfers').filter(t=>t.kind==='withdrawal'&&t.expenseId===expense.id).reduce((sum,t)=>sum+t.amount,0);
@@ -41,13 +42,13 @@ function formEnd(label='保存する',cancel='') { return `</div><div class="for
 function renderAuth() {
   closeDetail();
   document.querySelector('#navigation').hidden = true;
-  document.querySelector('#logout').hidden = !loginLoading;
+  document.querySelector('#logout').hidden = !loginLoading && !restoreRetry;
   main.setAttribute('aria-busy',String(loginLoading));
   if(loginLoading){
     main.innerHTML='<section class="panel auth-panel"><h1>読み込み中</h1><p class="muted" role="status">家計簿を読み込んでいます…</p></section>';
     return;
   }
-  main.innerHTML = `<section class="panel auth-panel"><h1>ログイン</h1><p class="muted">Googleアカウントでログインしてください。</p>${config ? `<button id="google-login" ${!googleClient ? 'disabled' : ''}>${googleClient ? 'Googleでログイン' : 'ログインを準備しています…'}</button>` : `<p class="notice">Google連携の準備が必要です。接続設定後にログインできます。</p>`}<div class="separator"><button id="demo-login" class="quiet">サンプルで試す</button><p class="hint">サンプルの入力は保存されず、終了すると消えます。</p></div></section>`;
+  main.innerHTML = `<section class="panel auth-panel"><h1>${restoreRetry?'再接続':'ログイン'}</h1><p class="muted">${restoreRetry?'ログイン情報は保持しています。通信を確認して再試行できます。':'Googleアカウントでログインしてください。'}</p>${restoreRetry?'<button id="restore-retry">読み込みを再試行</button>':''}${config ? `<button id="google-login" ${!googleClient ? 'disabled' : ''}>${googleClient ? 'Googleでログイン' : 'ログインを準備しています…'}</button>` : `<p class="notice">Google連携の準備が必要です。接続設定後にログインできます。</p>`}<div class="separator"><button id="demo-login" class="quiet">サンプルで試す</button><p class="hint">サンプルの入力は保存されず、終了すると消えます。</p></div></section>`;
 }
 
 function summary() {
@@ -273,9 +274,9 @@ async function ensureMonth() {
   await mutate('materializeMonth',{month:captured},()=>{materialized.add(captured);render();});
 }
 function closeImage(invalidate=true) { if(invalidate)imageRequest++;if(imageUrl){URL.revokeObjectURL(imageUrl);imageUrl=null;} }
-async function loadSession(demo=false) {
+async function loadSession(demo=false, initialState=null) {
   const epoch=authEpoch;
-  const loaded=await transport.load();
+  const loaded=initialState||await transport.load();
   if(epoch!==authEpoch)return;
   state=loaded;
   if(demo)transport.isDemo=true;
@@ -351,7 +352,15 @@ document.addEventListener('click',async event=>{
   if(btn.id==='demo-login'){
     try{clearSession();authEpoch++;sessionRole='editor';transport?.close?.();transport=createDemoTransport();transport.isDemo=true;await loadSession(true);}catch(error){message(error.message,true);}return;
   }
-  if(btn.id==='google-login'){googleClient?.requestCode();return;}
+  if(btn.id==='restore-retry'){authEpoch++;transport?.close?.();clearMessages();await initializeConfig();return;}
+  if(btn.id==='google-login'){
+    if(!googleClient||loginLoading)return;
+    // Start the server challenge alongside the popup, retaining the click's user gesture.
+    loginPreparation=prepareLogin(transport);
+    loginLoading=true;clearMessages();
+    try{googleClient.requestCode();}catch(error){loginLoading=false;message(error.message,true);}
+    renderAuth();return;
+  }
   if(btn.id==='logout'){await logout();return;}
   if(btn.id==='retry'){if(pendingCommand)await mutate(null,null,pendingSuccess,pendingCommand);return;}
   if(busy&&(btn.dataset.page||btn.dataset.tab||btn.dataset.action)){message('保存が終わるまでお待ちください。入力はこの画面に残っています。',true);return;}
@@ -456,16 +465,23 @@ async function showImage(id,trigger) {
 async function logout() {
   receiptUploads=[];
   clearSession();authEpoch++;closeImage();const previous=transport;
-  state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='register';tab='receipt';busy=false;loginLoading=false;sessionRole='editor';
+  state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='register';tab='receipt';busy=false;loginLoading=false;sessionRole='editor';restoreRetry=false;loginPreparation=null;
   main.replaceChildren();document.querySelector('#pending').hidden=true;document.querySelector('#mode-note').hidden=true;clearMessages();
   transport=null;renderAuth();
   // Clear the UI/storage immediately even if the revocation request is slow/offline.
   Promise.resolve(previous?.logout?.()).catch(()=>{}).finally(()=>previous?.close?.());
   try{await initializeConfig();}catch(error){message(error.message,true);}
 }
+function prepareLogin(loginTransport) {
+  const preparedAt=Date.now();
+  const preparation=loginTransport.prepareLogin().then(value=>({...value,preparedAt}));
+  // A popup may be cancelled before its callback ever observes this promise.
+  preparation.catch(()=>{});
+  return preparation;
+}
 async function initializeConfig() {
   const epoch=authEpoch;
-  config=null;googleClient=null;loginPreparation=null;loginLoading=false;
+  config=null;googleClient=null;loginPreparation=null;loginLoading=false;restoreRetry=false;
   let nextConfig=null;
   try{const response=await fetch('./runtime-config.json',{cache:'no-store'});if(response.ok)nextConfig=await response.json();}catch{}
   if(epoch!==authEpoch)return;
@@ -476,12 +492,13 @@ async function initializeConfig() {
   if(saved){
     loginLoading=true;renderAuth();
     try{
-      const restored=await loginTransport.restore(saved);
+      const restored=await loginTransport.restore(saved,{load:true});
       if(epoch!==authEpoch)return;
-      sessionRole=restored.role;const savedResult=saveSession(loginConfig,restored);await loadSession();if(epoch===authEpoch)sessionSaveNotice(savedResult);
+      sessionRole=restored.role;const savedResult=saveSession(loginConfig,restored);await loadSession(false,restored.state);if(epoch===authEpoch)sessionSaveNotice(savedResult);
     }catch(error){
       if(epoch!==authEpoch)return;
       if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code))clearSession();
+      else restoreRetry=true;
       message(error.message||'家計簿を読み込めませんでした。通信を確認して再読み込みしてください。',true);
     }finally{if(epoch===authEpoch)loginLoading=false;}
     if(epoch!==authEpoch||state)return;
@@ -492,12 +509,28 @@ async function initializeConfig() {
     if(epoch!==authEpoch)return;
     googleClient=google.accounts.oauth2.initCodeClient({client_id:loginConfig.clientId,scope:'openid email profile',ux_mode:'popup',callback:async result=>{
       if(epoch!==authEpoch)return;
-      if(result.error){message('Googleログインが完了しませんでした。もう一度お試しください。',true);return;}
+      if(result.error){loginLoading=false;renderAuth();message('Googleログインが完了しませんでした。もう一度お試しください。',true);return;}
       loginLoading=true;clearMessages();renderAuth();
-      try{loginPreparation=await loginTransport.prepareLogin();if(epoch!==authEpoch)return;const loginResult=await loginTransport.login(result.code,loginPreparation.state);if(epoch!==authEpoch)return;sessionRole=loginResult.role||'editor';const savedResult=saveSession(loginConfig,loginResult);await loadSession();if(epoch===authEpoch)sessionSaveNotice(savedResult);}
-      catch(error){if(epoch!==authEpoch)return;if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code))clearSession();message(error.message||'ログインできませんでした。',true);}
+      try{
+        let preparation=await (loginPreparation||prepareLogin(loginTransport));
+        if(epoch!==authEpoch)return;
+        if(Date.now()-preparation.preparedAt>=90000)preparation=await prepareLogin(loginTransport);
+        if(epoch!==authEpoch)return;
+        let loginResult;
+        try{loginResult=await loginTransport.login(result.code,preparation.state);}
+        catch(error){
+          if(error.code!=='AUTH_STATE'||epoch!==authEpoch)throw error;
+          preparation=await prepareLogin(loginTransport);
+          if(epoch!==authEpoch)return;
+          loginResult=await loginTransport.login(result.code,preparation.state);
+        }
+        if(epoch!==authEpoch)return;
+        sessionRole=loginResult.role||'editor';restoreRetry=false;
+        const savedResult=saveSession(loginConfig,loginResult);await loadSession();if(epoch===authEpoch)sessionSaveNotice(savedResult);
+      }
+      catch(error){if(epoch!==authEpoch)return;if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code))clearSession();else restoreRetry=!!readSession(loginConfig);message(error.message||'ログインできませんでした。',true);}
       finally{if(epoch===authEpoch){loginLoading=false;if(!state)renderAuth();}}
-    },error_callback:()=>message('ログイン画面が閉じられました。もう一度ログインできます。',true)});
+    },error_callback:()=>{if(epoch!==authEpoch)return;loginLoading=false;loginPreparation=null;renderAuth();message('ログイン画面が閉じられました。もう一度ログインできます。',true);}});
     renderAuth();
   }catch(error){if(epoch===authEpoch){message(error.message,true);renderAuth();}}
 }

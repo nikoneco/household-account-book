@@ -1,6 +1,6 @@
-// Only the opaque, short-lived app session is retained. Ledger/OAuth data stays in memory.
+// Only the opaque app session is retained. Ledger/OAuth data stays in memory.
 export const SESSION_STORAGE_KEY = 'household.session.v1';
-const MAX_SESSION_MS = 60 * 60 * 1000;
+const MAX_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 // Local filtering tolerates clock skew; the server still enforces its original expiry.
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
 const target = config => `${config.bridgeUrl}|${config.clientId}`;
