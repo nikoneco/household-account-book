@@ -294,3 +294,14 @@ Googleコードのサーバー検証を維持し、ログインから固定30日
 GAS v13の草稿反映・既存デプロイ更新・公開4ファイル一致・endpoint/access維持を確認。Pages 15ddfff3 built、Actions 37456768853 success、公開13ファイルが配信ブランチのGit blobとバイト一致（distとはテキスト改行正規化後の内容一致）、SW household-shell-v0.1.9。公開の通常Chromeでユーザー操作による実Googleログイン、保存期限約30日、3回再読込復元（5.6 / 5.4 / 5.0秒、うち旧セッション1回・新セッション2回）、別タブ開き直し、明示ログアウトを確認。家計の追加/編集/削除ボタンは押していない。速度はこのPC/回線での少数観測で、Google/GASの揺れは残る。
 
 QA: ページidentity/内容あり/エラーoverlayなし/画面画像/対象操作が成功。通常Chromeに拡張機能の非同期listener形式のメッセージ2件があったが、アプリには該当Chrome APIがなく、別の公開headless smokeではpage error0。ローカルの再接続画像はTemp/household-ui-qa/12-restore-retry.png、公開サンプルはTemp/household-startup-register/startup-receipt.png。スマホ実機の体感と30日間の実時間経過は未確認（期限はclockテスト）。新方式の開始は公開更新後に一度ログアウトして再Googleログイン。
+
+
+## 2026-10-06 更新後の重複処理を削減
+
+更新後の読み取り監査では、既存計画がそろう編集者bootstrapはSheets batchGet 2回、ロック1回、Drive 0回・書込0回・revision変更なし。保存画像は起動時に取得しない。認証設定の既存getPropertiesスナップショットを同一呼出し内で再利用し、個別getPropertyを14回から4回へ削減。ロック前後それぞれの新しい設定・セッション確認は維持し、待機中の許可取消・降格・origin変更も反映する。ホームsetBusyの積立全台帳集計をボタンごとの反復から呼出し内1回（ボタンなしなら0回）へ変更。レシートの日本時間日時formatterも再利用。画面をまたぐ家計集計のキャッシュは導入していない。
+
+134/134 tests、check、diff-check、build、公開13ファイル機密検索が成功。login/planned-deposit/settings-savings/ui-flow UIが成功。base457917dの7ファイルをSHA256固定し独立レビューPASS、指摘0件、前後ハッシュ一致。レビュアー独自のserver+SW68/68、planned-depositとreceipt-upload UI成功。日時10ケースと不正値例外の旧実装との一致を確認。要求設定は調査/実装Sol High・独立レビューAstra High、実モデルID/推論強度は照会不能。
+
+GAS v13/草稿を退避した上で同じデプロイをv14へ更新、公開4ファイル一致とendpoint/access維持を確認。Pages 6c8f56c0 built、Actions 37458402206 success、公開13ファイルが配信Git blobとバイト一致。SW household-shell-v0.1.10。公開Chromeは既存の新30日ログインを保持したまま2回更新し、登録/レシートへ3.3 / 3.2秒で復元。保存期限約29.991日、ホーム積立7ボタンの状態・入金済3件・登録済レシート13件を確認し、家計の保存/追加/編集/削除は操作していない。公開headlessサンプルで登録初期画面/ホーム移動/更新/390px横溢れなし/pageerror0も確認。速度は少数のPC/回線での観測で、今回の追加修正だけの速度効果は切り分けていない。スマホ実機の体感は未確認。
+
+条件付きの残課題として、画像の移動が継続して失敗すると、既存コードは更新ごとに再試行・状態保存を行う経路がある。fixtureでは2更新でDrive4回・書込2回・revision+2。本番画面では移動失敗表示0件だったため、今回の遅さの原因とは確認できず、再試行仕様の変更は保留した。受取メタデータの台帳同梱は安全確認と外部追記の扱いに影響するため、今回の小修正には含めていない。

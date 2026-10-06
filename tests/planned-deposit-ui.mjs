@@ -15,7 +15,8 @@ try {
   await page.clock.install({time:new Date('2026-10-05T23:30:00+09:00')});
   await page.route('**/runtime-config.json',r=>r.fulfill({status:404,body:'Local fixture'}));
   let app=(await readFile(new URL('../web/app.js',import.meta.url),'utf8')).replace(/\r\n/g,'\n');
-  app=app.replace('\nawait initializeConfig();\n','\nglobalThis.__householdTest={transport:()=>transport,refresh:async()=>{state=await transport.load();render();}};\nawait initializeConfig();\n');
+  app=app.replace('function summary() {','function summary() { globalThis.__summaryCalls=(globalThis.__summaryCalls||0)+1;');
+  app=app.replace('\nawait initializeConfig();\n','\nglobalThis.__householdTest={transport:()=>transport,setBusy,refresh:async()=>{state=await transport.load();render();}};\nawait initializeConfig();\n');
   await page.route('**/web/app.js',r=>r.fulfill({contentType:'text/javascript',body:app}));
   await page.goto(process.env.HOUSEHOLD_PREVIEW_URL||'http://127.0.0.1:4283/');
   const click=name=>page.getByRole('button',{name,exact:true}).click();
@@ -64,6 +65,14 @@ try {
   await form.getByRole('button',{name:'項目を追加'}).click();
   await page.waitForFunction(()=>document.querySelectorAll('.monthly-form').length===2);
   await click('ホーム');
+  // Multiple savings buttons share one current summary for each busy-state update.
+  assert.equal(await page.locator('[data-action="planned-deposit"]').count(),2);
+  const summaryCounts=await page.evaluate(()=>{
+    globalThis.__summaryCalls=0;__householdTest.setBusy(true);const whenBusy=__summaryCalls;
+    globalThis.__summaryCalls=0;__householdTest.setBusy(false);const whenReady=__summaryCalls;
+    return {whenBusy,whenReady};
+  });
+  assert.deepEqual(summaryCounts,{whenBusy:1,whenReady:1});
   const row=page.locator('.saving-row').filter({hasText:'予定額の積立'});
   const openRow=async()=>{if(await row.getAttribute('open')===null)await row.locator('summary').click();};
   assert.equal(await row.getAttribute('open'),null);
@@ -138,6 +147,9 @@ try {
   const bankPlan=(await state()).plans.find(p=>p.settingId==='bank-fixed-ui');
   assert.equal(bankPlan.bankAutoHandled,true);
   await click('登録');await page.getByRole('tab',{name:'支出',exact:true}).click();
+  assert.equal(await page.evaluate(()=>{
+    globalThis.__summaryCalls=0;__householdTest.setBusy(false);return __summaryCalls;
+  }),0,'Busy update skips financial summary when no savings buttons exist');
   assert.equal(await page.locator('#expense-form [name=planId] option').evaluateAll((nodes,id)=>nodes.some(node=>node.value===id),bankPlan.id),false,'Automatically paid bank plans cannot be reselected for a new expense');
   await click('履歴');
   await page.locator('.entry').filter({hasText:'自動銀行固定費'}).getByRole('button',{name:'編集',exact:true}).click();

@@ -192,12 +192,12 @@ function authConfig_() {
     });
   });
   var config = {
-    clientId: properties.getProperty('HOUSEHOLD_OAUTH_CLIENT_ID'),
-    clientSecret: properties.getProperty('HOUSEHOLD_OAUTH_CLIENT_SECRET'),
-    sub: (properties.getProperty('HOUSEHOLD_ALLOWED_SUB') || '').trim(),
+    clientId: values.HOUSEHOLD_OAUTH_CLIENT_ID,
+    clientSecret: values.HOUSEHOLD_OAUTH_CLIENT_SECRET,
+    sub: (values.HOUSEHOLD_ALLOWED_SUB || '').trim(),
     emails: editorEmails,
-    viewers: (properties.getProperty('HOUSEHOLD_VIEWER_EMAILS') || '').split(',').map(email_).filter(function (value) { return !!value; }),
-    origin: pwaOrigin_()
+    viewers: (values.HOUSEHOLD_VIEWER_EMAILS || '').split(',').map(email_).filter(function (value) { return !!value; }),
+    origin: validatePwaOrigin_(values.HOUSEHOLD_PWA_ORIGIN)
   };
   if (!config.clientId || !config.clientSecret || (!config.sub && !config.emails.length)) {
     fail_('NOT_CONFIGURED', '管理者による非公開の認証設定が必要です。');
@@ -209,7 +209,10 @@ function authConfig_() {
 }
 
 function pwaOrigin_() {
-  var origin = PropertiesService.getScriptProperties().getProperty('HOUSEHOLD_PWA_ORIGIN');
+  return validatePwaOrigin_(PropertiesService.getScriptProperties().getProperty('HOUSEHOLD_PWA_ORIGIN'));
+}
+
+function validatePwaOrigin_(origin) {
   // Exact origin only: no path, query, fragment, credentials, wildcard or slash.
   if (typeof origin !== 'string' || !/^https:\/\/[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$/.test(origin)) {
     fail_('NOT_CONFIGURED', 'HTTPSの公開元originを設定してください。');

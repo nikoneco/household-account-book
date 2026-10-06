@@ -9,7 +9,8 @@ const yen = value => '¥' + Number(value || 0).toLocaleString('ja-JP');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const today = () => new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const monthLabel = value => `${Number(value.slice(0,4))}年${Number(value.slice(5,7))}月`;
-const savedTime = value => value ? new Intl.DateTimeFormat('ja-JP',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(value)) : '未確認';
+const savedTimeFormat = new Intl.DateTimeFormat('ja-JP',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+const savedTime = value => value ? savedTimeFormat.format(new Date(value)) : '未確認';
 let month = today().slice(0,7), page = 'register', tab = 'receipt', state = null, transport = null, config = null;
 let busy = false, loginLoading = false, pendingCommand = null, pendingSuccess = null, editing = null, settingEdit = null, loginPreparation = null, googleClient = null;
 let transferPreset = null, imageUrl = null, imageRequest = 0, authEpoch = 0, sessionRole = 'editor';
@@ -232,9 +233,12 @@ function render() {
 function setBusy(value) {
   busy=value;
   document.querySelectorAll('form button[type="submit"], [data-action="delete-expense"], [data-action="delete-transfer"], [data-action="toggle-setting"]').forEach(el=>el.disabled=value || !!pendingCommand);
-  document.querySelectorAll('[data-action="planned-deposit"]').forEach(el=>{
-    const item=summary().savings.find(item=>item.settingId===el.dataset.id);
-    el.disabled=value||!!pendingCommand||month!==today().slice(0,7)||!item||item.planned<=0||item.deposited>=item.planned;
+  const plannedDeposits=document.querySelectorAll('[data-action="planned-deposit"]');
+  const savingSummary=plannedDeposits.length?summary().savings:[];
+  const currentMonth=plannedDeposits.length?today().slice(0,7):'';
+  plannedDeposits.forEach(el=>{
+    const item=savingSummary.find(item=>item.settingId===el.dataset.id);
+    el.disabled=value||!!pendingCommand||month!==currentMonth||!item||item.planned<=0||item.deposited>=item.planned;
   });
   document.querySelector('#retry').disabled=value;
   main.setAttribute('aria-busy',String(value));

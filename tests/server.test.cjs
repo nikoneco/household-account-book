@@ -177,7 +177,7 @@ function harness(options = {}) {
     HOUSEHOLD_OAUTH_CLIENT_SECRET: 'server-secret', HOUSEHOLD_PWA_ORIGIN: 'https://example.github.io',
     ...(options.props || {})
   };
-  const io = { sheet: 0, drive: 0, create: 0, batches: [], batchReads: [], exchanges: [], moves: [], lockTaken: 0, lockReleased: 0 };
+  const io = { sheet: 0, drive: 0, create: 0, propertyReads: 0, propertySnapshots: 0, batches: [], batchReads: [], exchanges: [], moves: [], lockTaken: 0, lockReleased: 0 };
   const cache = new Map();
   const sheets = new Map();
   let sequence = 1;
@@ -263,9 +263,9 @@ function harness(options = {}) {
   const context = {
     ...(options.now ? { Date: class extends Date { constructor(...args) { super(...(args.length ? args : [clockNow()])); } static now() { return clockNow(); } } } : {}),
     HouseholdDomain: options.domain || domain,
-    PropertiesService: { getScriptProperties: () => ({ getProperty: name => props[name] || null, getProperties: () => ({ ...props }), setProperty: (name, value) => {props[name]=value;}, deleteProperty: name => {delete props[name];} }) },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: name => {io.propertyReads++;return props[name] || null;}, getProperties: () => {io.propertySnapshots++;return {...props};}, setProperty: (name, value) => {props[name]=value;}, deleteProperty: name => {delete props[name];} }) },
     CacheService: { getScriptCache: () => ({ put(key, value, ttl) { assert.ok(ttl > 0 && ttl <= 3600); cache.set(key, { value, expiry: clockNow() + ttl * 1000 }); }, get(key) { const item = cache.get(key); return item && item.expiry > clockNow() ? item.value : null; }, remove: key => cache.delete(key) }) },
-    LockService: { getScriptLock: () => ({ tryLock() { io.lockTaken++; return !options.busy; }, releaseLock() { io.lockReleased++; } }) },
+    LockService: { getScriptLock: () => ({ tryLock() { io.lockTaken++;if(options.onLock)options.onLock(props);return !options.busy; }, releaseLock() { io.lockReleased++; } }) },
     Utilities: { getUuid: () => crypto.randomUUID(), newBlob: blob, base64Decode: value => Array.from(Buffer.from(value, 'base64')), base64DecodeWebSafe: value => Array.from(Buffer.from(value, 'base64url')), base64Encode: bytes => Buffer.from(bytes).toString('base64'), DigestAlgorithm: { SHA_256: 'sha256' }, computeDigest: (algorithm, bytes) => Array.from(crypto.createHash(algorithm).update(Buffer.from(bytes)).digest()) },
     UrlFetchApp: { fetch(url, request) {
       io.exchanges.push({ url, request: clone(request) });
@@ -373,6 +373,46 @@ test('anonymous read, write, upload and image cannot touch Sheets or Drive', () 
     for (const session of [undefined, 'x', 'a'.repeat(64)]) assert.throws(() => h.call('rpc', { session, operation, payload: {} }), /AUTH_REQUIRED/);
   }
   assert.equal(h.io.sheet, 0); assert.equal(h.io.drive, 0);
+});
+
+test('settled bootstrap reads auth configuration once per check without redundant property lookups', () => {
+  const h=harness(),auth=h.login(),before={reads:h.io.propertyReads,snapshots:h.io.propertySnapshots};
+  h.call('rpc',{session:auth.session,operation:'bootstrap'});
+  assert.equal(h.io.propertyReads-before.reads,4,'two session reads plus storage/archive config; no duplicate auth field reads');
+  assert.equal(h.io.propertySnapshots-before.snapshots,2,'fresh config before and after lock');
+  assert.equal(h.io.batchReads.length,2);assert.equal(h.io.batches.length,0);assert.equal(h.io.drive,0);
+  const reads=h.io.propertyReads,snapshots=h.io.propertySnapshots;
+  const config=h.call('authConfig_');assert.equal(config.origin,'https://example.github.io');
+  assert.equal(h.io.propertyReads,reads);assert.equal(h.io.propertySnapshots,snapshots+1);
+});
+
+test('fresh post-lock auth snapshot observes account revocation and origin changes before storage IO', () => {
+  for(const change of ['revoked','origin']){
+    const options={},h=harness(options),auth=h.login();
+    options.onLock=props=>{
+      if(change==='revoked')props.HOUSEHOLD_ALLOWED_EMAIL='replacement@example.test';
+      else props.HOUSEHOLD_PWA_ORIGIN='https://changed.example.test';
+    };
+    const before=h.io.propertySnapshots;
+    assert.throws(()=>h.call('rpc',{session:auth.session,operation:'bootstrap'}),/AUTH_REQUIRED/);
+    assert.equal(h.io.propertySnapshots-before,2);assert.equal(h.io.sheet+h.io.drive,0);assert.equal(h.io.lockTaken,h.io.lockReleased);
+  }
+  const options={},h=harness(options),auth=h.login();
+  options.onLock=props=>{props.HOUSEHOLD_ALLOWED_EMAIL='replacement@example.test';props.HOUSEHOLD_VIEWER_EMAILS='wife@example.test';};
+  assert.equal(h.call('rpc',{session:auth.session,operation:'bootstrap'}).role,'viewer');
+  assert.equal(h.io.batches.length,0);assert.equal(h.io.drive,0);
+});
+
+test('snapshot origin validation matches direct fresh origin lookup for invalid and changed values', () => {
+  const h=harness();
+  for(const value of [undefined,null,'',42,'http://example.test','https://example.test/','https://example.test/path','https://*.test','https://user@example.test','https://example.test?x=1','https://example.test#x']){
+    h.props.HOUSEHOLD_PWA_ORIGIN=value;
+    assert.throws(()=>h.call('authConfig_'),/NOT_CONFIGURED/);
+    assert.throws(()=>h.call('pwaOrigin_'),/NOT_CONFIGURED/);
+  }
+  for(const value of ['https://example.test','https://other.test:444']){
+    h.props.HOUSEHOLD_PWA_ORIGIN=value;assert.equal(h.call('authConfig_').origin,value);assert.equal(h.call('pwaOrigin_'),value);
+  }
 });
 
 test('only directly exchanged Google token authenticates, popup redirect uses exact Pages origin', () => {
