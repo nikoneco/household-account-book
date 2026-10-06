@@ -3,6 +3,10 @@ var HouseholdDomain = (function () {
   'use strict';
 
   var CATEGORIES = Object.freeze(['食費', '酒', '趣味', '外食', '被服費', '美容', '積立', '必要経費', 'その他']);
+  var OUTFLOW_CATEGORIES = Object.freeze(['食費', '酒', '外食', '趣味', '被服費', '美容', '必要経費', '積立', '固定費', 'その他']);
+  // Ordinary purchases retain all legacy choices. Fixed costs are assigned by
+  // their kind/attribute, while persisted legacy classifications stay valid.
+  var RECORD_CATEGORIES = CATEGORIES.concat(['固定費']);
   var PAYMENT_METHODS = Object.freeze(['cash', 'bank', 'card']);
   var TABLES = ['expenses', 'settings', 'plans', 'transfers', 'incomes', 'bills', 'receipts', 'operations'];
   var FIXED_AUTO_START_MONTH = '2026-10';
@@ -127,6 +131,7 @@ var HouseholdDomain = (function () {
     return id;
   }
   function value(p, old, key, fallback) { return own(p, key) ? p[key] : old && own(old, key) ? old[key] : fallback; }
+  function settingCategory(kind) { return kind === 'fixed' ? '固定費' : '積立'; }
 
   function savingsLedger(state, settingId) {
     var setting = byId(state.settings, settingId, '積立設定');
@@ -175,7 +180,7 @@ var HouseholdDomain = (function () {
       amount(row.openingBalance, '開始残高', false);
       if (row.targetAmount != null) amount(row.targetAmount, '目標額', false);
       oneOf(row.paymentMethod, PAYMENT_METHODS, '支払方法');
-      oneOf(row.category, CATEGORIES, '分類');
+      oneOf(row.category, RECORD_CATEGORIES, '分類');
       text(row.memo, 'メモ', false);
       bool(row.active, '設定の有効状態');
       if (row.kind === 'fixed' && row.openingBalance !== 0) fail('INVALID_INPUT', '固定費に開始残高は設定できません。');
@@ -188,7 +193,7 @@ var HouseholdDomain = (function () {
       text(row.name, '計画の名前', true, 120);
       amount(row.plannedAmount, '月別予定額', false);
       oneOf(row.paymentMethod, PAYMENT_METHODS, '支払方法');
-      oneOf(row.category, CATEGORIES, '分類');
+      oneOf(row.category, RECORD_CATEGORIES, '分類');
       text(row.memo, 'メモ', false);
       if (own(row, 'bankAutoHandled')) bool(row.bankAutoHandled, '固定費の処理状態');
     });
@@ -219,7 +224,7 @@ var HouseholdDomain = (function () {
       date(row.useDate); month(row.accountingMonth);
       amount(row.amount, '支出額', true);
       if (own(row, 'quantity')) quantity(row.quantity);
-      oneOf(row.category, CATEGORIES, '分類');
+      oneOf(row.category, RECORD_CATEGORIES, '分類');
       oneOf(row.paymentMethod, PAYMENT_METHODS, '支払方法');
       bool(row.fixed, '固定費属性'); bool(row.manualEdited, '手修正状態');
       amount(row.version, '明細バージョン', true);
@@ -304,7 +309,7 @@ var HouseholdDomain = (function () {
     var plan = {
       id: newId(state.plans, {}, context), month: targetMonth, settingId: setting.id,
       kind: setting.kind, name: setting.name, plannedAmount: setting.plannedAmount,
-      paymentMethod: setting.paymentMethod, category: setting.category, memo: setting.memo
+      paymentMethod: setting.paymentMethod, category: settingCategory(setting.kind), memo: setting.memo
     };
     state.plans.push(plan);
     return plan;
@@ -327,7 +332,7 @@ var HouseholdDomain = (function () {
       if (!paid) {
         var actual = upsertExpense(state, {
           useDate: plan.month + '-01', accountingMonth: plan.month, amount: plan.plannedAmount,
-          category: plan.category, paymentMethod: plan.paymentMethod, fixed: true,
+          category: '固定費', paymentMethod: plan.paymentMethod, fixed: true,
           description: plan.name, memo: plan.memo, settingId: plan.settingId, planId: plan.id
         }, context);
         created.push(actual.id);
@@ -355,7 +360,7 @@ var HouseholdDomain = (function () {
       id: old ? old.id : newId(state.settings, p, context),
       kind: value(p, old, 'kind', undefined), name: value(p, old, 'name', ''),
       plannedAmount: value(p, old, 'plannedAmount', 0), paymentMethod: value(p, old, 'paymentMethod', 'bank'),
-      category: value(p, old, 'category', 'その他'), openingBalance: value(p, old, 'openingBalance', 0),
+      category: settingCategory(value(p, old, 'kind', undefined)), openingBalance: value(p, old, 'openingBalance', 0),
       memo: value(p, old, 'memo', ''), active: value(p, old, 'active', true)
     };
     var target = value(p, old, 'targetAmount', undefined);
@@ -379,6 +384,7 @@ var HouseholdDomain = (function () {
     if ((own(p, 'month') && p.month !== plan.month) || (own(p, 'settingId') && p.settingId !== plan.settingId)) fail('CONFLICT', '月別計画の対象月と設定は変更できません。');
     // Only this explicit action overrides a frozen month. Master-setting edits never do.
     plan.plannedAmount = amount(p.plannedAmount, '月別予定額', false);
+    plan.category = settingCategory(plan.kind);
     if (own(p, 'memo')) plan.memo = text(p.memo, 'メモ', false);
     return plan;
   }
@@ -407,10 +413,11 @@ var HouseholdDomain = (function () {
     var recalculated = !old || useDate !== old.useDate || method !== old.paymentMethod;
     var accounting = isFixed ? useDate.slice(0, 7) : own(p, 'accountingMonth') ? month(p.accountingMonth) : recalculated ? method === 'card' ? cardMonth(useDate) : useDate.slice(0, 7) : old.accountingMonth;
     if (isFixed && own(p, 'accountingMonth') && month(p.accountingMonth) !== accounting) fail('INVALID_INPUT', '固定費は支払月の1日付・当月計上で記録してください。');
+    var category = own(p, 'category') ? p.category : old && old.category !== '固定費' ? old.category : 'その他';
     var row = {
       id: old ? old.id : newId(state.expenses, p, context), useDate: useDate, accountingMonth: accounting,
       amount: amount(value(p, old, 'amount', undefined), '支出額', true),
-      category: oneOf(value(p, old, 'category', 'その他'), CATEGORIES, '分類'), paymentMethod: method,
+      category: isFixed ? '固定費' : oneOf(category, CATEGORIES, '分類'), paymentMethod: method,
       fixed: isFixed,
       description: text(value(p, old, 'description', ''), '内容', false, 2000),
       memo: text(value(p, old, 'memo', ''), 'メモ', false),
@@ -647,13 +654,15 @@ var HouseholdDomain = (function () {
     var salaryOutflow = add(salaryExpenses, savingsDeposited);
     var monthlyRemaining = add(income, -salaryOutflow);
     var categories = {}, outflowCategories = {}, outflowItems = [];
-    CATEGORIES.forEach(function (category) { categories[category] = 0; outflowCategories[category] = 0; });
+    CATEGORIES.forEach(function (category) { categories[category] = 0; });
+    OUTFLOW_CATEGORIES.forEach(function (category) { outflowCategories[category] = 0; });
     expenses.forEach(function (expense) {
-      categories[expense.category] = add(categories[expense.category], expense.amount);
+      categories[expense.category] = add(categories[expense.category] || 0, expense.amount);
       var covered = withdrawnByExpense.get(expense.id) || 0;
       var fromSalary = add(expense.amount, -covered);
-      outflowCategories[expense.category] = add(outflowCategories[expense.category], fromSalary);
-      if (fromSalary > 0) outflowItems.push({ id: expense.id, kind: 'purchase', category: expense.category, date: expense.useDate, description: expense.description || expense.category, amount: fromSalary, purchaseAmount: expense.amount, savingsCovered: covered });
+      var outflowCategory = expense.fixed ? '固定費' : expense.category;
+      outflowCategories[outflowCategory] = add(outflowCategories[outflowCategory], fromSalary);
+      if (fromSalary > 0) outflowItems.push({ id: expense.id, kind: 'purchase', category: outflowCategory, date: expense.useDate, description: expense.description || outflowCategory, amount: fromSalary, purchaseAmount: expense.amount, savingsCovered: covered });
     });
     outflowCategories['積立'] = add(outflowCategories['積立'], savingsDeposited);
     transfers.forEach(function (transfer) {
@@ -689,6 +698,6 @@ var HouseholdDomain = (function () {
     };
   }
 
-  return Object.freeze({ emptyState: emptyState, cardMonth: cardMonth, todayJst: todayJst, summarize: summarize, balance: balance, execute: execute, reconcileBankFixedExpenses: reconcileBankFixedExpenses, CATEGORIES: CATEGORIES, PAYMENT_METHODS: PAYMENT_METHODS });
+  return Object.freeze({ emptyState: emptyState, cardMonth: cardMonth, todayJst: todayJst, summarize: summarize, balance: balance, execute: execute, reconcileBankFixedExpenses: reconcileBankFixedExpenses, CATEGORIES: CATEGORIES, OUTFLOW_CATEGORIES: OUTFLOW_CATEGORIES, PAYMENT_METHODS: PAYMENT_METHODS });
 }());
 if (typeof module !== 'undefined' && module.exports) module.exports = HouseholdDomain;

@@ -81,6 +81,7 @@ input[type=date]::-webkit-datetime-edit,input[type=month]::-webkit-datetime-edit
  * states: closed, open, paid, partial, zero-plan, hover, focus-visible, active, disabled
  * contrast: pass (badge 4.58:1; focus ring 3.17:1) · mobile: pass (320, 375, 414, 768px)
  * pre-emit critique: P4 H5 E4 S5 R5 V4 · Component-scope: skipping macrostructure.
+ * contrast-pass: open accordion text >=4.88:1; focus ring >=3.06:1 (Chromium computed colors).
  */
 .saving-row.saving-item{padding:0}
 .saving-item-summary{display:grid;grid-template-columns:minmax(0,1fr) auto 10px;align-items:center;gap:var(--space-3);min-height:56px;padding:var(--space-3) var(--space-2);list-style:none;cursor:pointer;color:var(--ink);border-radius:6px}
@@ -100,3 +101,29 @@ input[type=date]::-webkit-datetime-edit,input[type=month]::-webkit-datetime-edit
 .saving-item-body button:disabled{cursor:default}
 @media(hover:hover){.saving-item-summary:hover{background:var(--pale);color:var(--ink)}}
 @media(max-width:350px){.saving-item-summary{gap:var(--space-2);padding-left:var(--space-1);padding-right:var(--space-1)}.saving-item-body{padding-left:var(--space-1);padding-right:var(--space-1)}}
+
+/* Hallmark · component: accordion-reading-surfaces · genre: editorial · theme: existing sage and paper
+ * states: closed, open, hover, focus-visible, active, empty, disabled-action
+ * pre-emit critique: P4 H5 E4 S5 R5 V4 · Component-scope: skipping macrostructure.
+ */
+:root{--accordion-heading-surface:var(--pale);--accordion-detail-surface:var(--white);--accordion-detail-alternate:var(--paper);--accordion-saving-surface:var(--settings-saving-surface);--accordion-fixed-surface:var(--settings-fixed-surface);--accordion-rule:var(--line)}
+.outflow-category{margin:6px 0;border:1px solid var(--accordion-rule);border-radius:8px;background:var(--accordion-detail-surface)}
+.outflow-category>.outflow-category-summary{padding:4px 10px;border-radius:7px;min-height:48px}
+.outflow-category[open]>.outflow-category-summary{background:var(--accordion-heading-surface);font-weight:650;border-bottom:1px solid var(--accordion-rule);border-radius:7px 7px 0 0}
+.outflow-category[data-category="積立"]>.outflow-category-summary{background:var(--accordion-saving-surface)}
+.outflow-category[data-category="固定費"]>.outflow-category-summary{background:var(--accordion-fixed-surface)}
+.outflow-category-items{padding:0 10px 8px;background:var(--accordion-detail-surface);border-radius:0 0 7px 7px}
+.outflow-entry{padding:10px 6px;border-top:0;border-bottom:1px solid var(--accordion-rule)}
+.outflow-entry:nth-child(even){background:var(--accordion-detail-alternate)}
+.outflow-entry:last-child{border-bottom:0}
+.outflow-category-summary:active,.outflow-category-summary.is-active{background:var(--accordion-heading-surface)}
+.outflow-category-summary.is-focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.saving-row.saving-item{margin:10px 0;border:1px solid var(--accordion-rule);border-radius:8px;background:var(--accordion-detail-surface)}
+.saving-item>.saving-item-summary{padding:12px 10px;background:var(--accordion-saving-surface);border-radius:7px}
+.saving-item[open]>.saving-item-summary{background:var(--accordion-saving-surface);border-bottom:1px solid var(--accordion-rule);border-radius:7px 7px 0 0}
+.saving-item-body{padding:6px 10px 12px;background:var(--accordion-detail-surface);border-radius:0 0 7px 7px}
+.saving-item-body>.account-line{padding:10px 6px;border-bottom:1px solid var(--accordion-rule)}
+.saving-item-body>.account-line:nth-child(even){background:var(--accordion-detail-alternate)}
+.saving-item-body>.hint{padding:8px 6px;margin-bottom:0}
+@media(hover:hover){.outflow-category>.outflow-category-summary:hover,.outflow-category-summary.is-hover{background:var(--accordion-heading-surface)}.saving-item>.saving-item-summary:hover{background:var(--accordion-heading-surface)}}
+@media(max-width:350px){.outflow-category>.outflow-category-summary{padding-left:6px;padding-right:6px}.category.outflow-category-summary{grid-template-columns:56px minmax(10px,1fr) auto 8px;gap:6px}}
