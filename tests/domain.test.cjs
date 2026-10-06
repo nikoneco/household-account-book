@@ -58,7 +58,7 @@ test('all fixed payment methods pay on JST day one in the same month; zero stays
   const actual = b.state.expenses[0];
   assert.deepEqual(plain({ ...actual, id: '', planId: '' }), {
     id: '', planId: '', settingId: 'fixed', useDate: '2026-10-01', accountingMonth: '2026-10',
-    amount: 1234, category: '必要経費', paymentMethod: 'bank', fixed: true,
+    amount: 1234, category: '固定費', paymentMethod: 'bank', fixed: true,
     description: '通信費', memo: '引落', manualEdited: false, version: 1
   });
   assert.equal(D.summarize(b.state, '2026-10').fixedTotal, 11234);
@@ -84,7 +84,7 @@ test('future bank snapshots become due at JST midnight and keep frozen values af
   assert.equal(actual.useDate, '2026-11-01');
   assert.equal(actual.amount, 100);
   assert.equal(actual.description, '通信費');
-  assert.equal(actual.category, '必要経費');
+  assert.equal(actual.category, '固定費');
   assert.equal(actual.memo, '当初');
   assert.equal(D.reconcileBankFixedExpenses(due.state, { ...b.options, now: '2026-11-05T03:00:00.000Z' }).changed, false);
 });
@@ -160,6 +160,7 @@ test('editing legacy card fixed actuals preserves their saved target month and l
   expense(b,{useDate:'2026-10-01',settingId:'fixed',paymentMethod:'card',memo:'旧実績'});
   const legacy=plain(b.state),actual=legacy.expenses.find(e=>e.id==='expense');
   actual.useDate='2026-09-27';
+  actual.category='必要経費';
   const before=JSON.stringify(legacy.expenses);
   assert.equal(D.reconcileBankFixedExpenses(legacy,{...b.options,now:'2026-10-05T03:00:00.000Z'}).createdExpenseIds.length,0);
   assert.equal(JSON.stringify(legacy.expenses),before);
@@ -167,6 +168,7 @@ test('editing legacy card fixed actuals preserves their saved target month and l
     const changed=D.execute(legacy,{type:'upsertExpense',operationId:'legacy-edit',payload},{...b.options,now:'2026-10-05T03:00:00.000Z'}).state;
     assert.equal(changed.expenses.length,1);const edited=changed.expenses[0];
     assert.equal(edited.amount,1234);assert.equal(edited.useDate,'2026-10-01');assert.equal(edited.accountingMonth,'2026-10');
+    assert.equal(edited.category,'固定費');
     assert.equal(edited.planId,actual.planId);assert.equal(edited.memo,'旧実績');
     assert.equal(D.reconcileBankFixedExpenses(changed,{...b.options,now:'2026-10-05T03:00:00.000Z'}).changed,false);
   }
@@ -424,9 +426,9 @@ test('outflow breakdown includes deposit-only months and actual saving-category 
   b.options.now='2026-11-02T03:00:00.000Z';
   deposit(b,{id:'nov-deposit',date:'2026-11-01',amount:4000});
   s=D.summarize(b.state,'2026-10');
-  assert.equal(s.outflowCategories['積立'],11500);assert.equal(s.outflowCategories['必要経費'],10000);
+  assert.equal(s.outflowCategories['積立'],11500);assert.equal(s.outflowCategories['固定費'],10000);assert.equal(s.outflowCategories['必要経費'],0);
   assert.equal(s.categories['積立'],1500,'purchase-only summary remains compatible');
-  assert.deepEqual(plain(s.outflowItems.map(item=>[item.description,item.category,item.amount])),[['積立','積立',1500],['定額貯金','必要経費',10000],['旅行積立','積立',10000]]);
+  assert.deepEqual(plain(s.outflowItems.map(item=>[item.description,item.category,item.amount])),[['積立','積立',1500],['定額貯金','固定費',10000],['旅行積立','積立',10000]]);
   assert.equal(Object.values(s.outflowCategories).reduce((n,value)=>n+value,0),s.salaryOutflow);
   assert.equal(D.summarize(b.state,'2026-11').outflowCategories['積立'],4000);
   b.run('deleteTransfer',{id:'deposit'});
@@ -1014,7 +1016,7 @@ test('new categories work for manual edits, fixed plans and mixed receipt import
   fixed(b,{category:'積立',paymentMethod:'cash',plannedAmount:2000});
   b.run('materializeMonth',{month:'2026-10'});
   const plan=b.state.plans.find(p=>p.kind==='fixed');
-  assert.equal(plan.category,'積立');
+  assert.equal(plan.category,'固定費');
   const fixedActual=b.state.expenses.find(e=>e.planId===plan.id);
   b.run('upsertExpense',{id:fixedActual.id,memo:'分類の確認'});
   receipt(b);
@@ -1028,10 +1030,125 @@ test('new categories work for manual edits, fixed plans and mixed receipt import
   const s=D.summarize(b.state,'2026-10');
   assert.equal(s.categories['被服費'],400);
   assert.equal(s.categories['美容'],3500);
-  assert.equal(s.categories['積立'],2300);
+  assert.equal(s.categories['積立'],300);
+  assert.equal(s.categories['固定費'],2000);
   assert.equal(s.expenses,6200);
   assert.equal(b.state.expenses.length,5);
   assert.equal(b.state.transfers.length,0);
   assert.equal(s.savingsDeposited,0);
   assert.equal(s.savings[0].balance,50000);
+});
+
+test('outflow category order is independent of the backward-compatible ordinary purchase choices', () => {
+  assert.deepEqual(plain(D.CATEGORIES), ['食費','酒','趣味','外食','被服費','美容','積立','必要経費','その他']);
+  assert.deepEqual(plain(D.OUTFLOW_CATEGORIES), ['食費','酒','外食','趣味','被服費','美容','必要経費','積立','固定費','その他']);
+  assert.equal(Object.isFrozen(D.OUTFLOW_CATEGORIES),true);
+  const s=D.summarize(D.emptyState(),'2026-10');
+  assert.deepEqual(Object.keys(s.outflowCategories),plain(D.OUTFLOW_CATEGORIES));
+  assert.deepEqual(Object.keys(s.categories),plain(D.CATEGORIES));
+});
+
+test('all nine legacy categories remain valid on settings, plans and fixed expenses without read-time or unrelated-write changes', () => {
+  for(const category of D.CATEGORIES){
+    const b=book('2026-09-20T03:00:00.000Z');
+    saving(b);fixed(b,{paymentMethod:'cash'});
+    b.run('materializeMonth',{month:'2026-09'});
+    expense(b,{useDate:'2026-09-05',fixed:true,amount:1000,category});
+    const legacy=plain(b.state);
+    legacy.settings.forEach(row=>row.category=category);
+    legacy.plans.forEach(row=>row.category=category);
+    legacy.expenses.forEach(row=>row.category=category);
+    const before=JSON.stringify(legacy);
+    const s=D.summarize(legacy,'2026-09');
+    assert.equal(JSON.stringify(legacy),before,category);
+    assert.equal(s.categories[category],1000,'purchase-only classification keeps its stored legacy category');
+    assert.deepEqual(Object.keys(s.categories),plain(D.CATEGORIES));
+    assert.equal(s.outflowCategories['固定費'],1000);
+    assert.equal(s.outflowCategories[category],0);
+    assert.equal(s.outflowItems[0].category,'固定費');
+    assert.equal(s.salaryOutflow,1000);
+    const reconciled=D.reconcileBankFixedExpenses(legacy,b.options);
+    assert.equal(reconciled.changed,false);
+    assert.equal(JSON.stringify(reconciled.state),before);
+    const edited=D.execute(legacy,{type:'saveIncome',operationId:'unrelated-write',payload:{month:'2026-09',amount:5000}},b.options).state;
+    for(const table of ['settings','plans','expenses'])assert.deepEqual(plain(edited[table]),legacy[table]);
+    assert.equal(JSON.stringify(legacy),before);
+  }
+});
+
+test('settings and explicitly edited or newly created plans derive category from kind while legacy snapshots stay frozen', () => {
+  const b=book('2026-09-20T03:00:00.000Z');
+  assert.equal(saving(b,{category:'食費'}).category,'積立');
+  assert.equal(fixed(b,{category:'積立',paymentMethod:'cash'}).category,'固定費');
+  b.run('materializeMonth',{month:'2026-10'});
+  const legacy=plain(b.state);
+  legacy.settings.forEach(row=>row.category='趣味');
+  legacy.plans.forEach(row=>row.category='食費');
+  const oldPlans=JSON.stringify(legacy.plans);
+  const newer=D.execute(legacy,{type:'materializeMonth',operationId:'new-plans',payload:{month:'2026-11'}},b.options).state;
+  assert.equal(JSON.stringify(newer.plans.filter(row=>row.month!=='2026-11')),oldPlans);
+  for(const plan of newer.plans.filter(row=>row.month==='2026-11'))assert.equal(plan.category,plan.kind==='fixed'?'固定費':'積立');
+  for(const kind of ['fixed','saving']){
+    const changed=D.execute(legacy,{type:'saveSetting',operationId:'setting-'+kind,payload:{id:kind,category:'その他',memo:'変更'}},b.options).state;
+    assert.equal(changed.settings.find(row=>row.id===kind).category,kind==='fixed'?'固定費':'積立');
+    assert.equal(JSON.stringify(changed.plans),oldPlans,'setting edits never rewrite prior month snapshots');
+    const plan=legacy.plans.find(row=>row.kind===kind&&row.month==='2026-10');
+    const edited=D.execute(legacy,{type:'savePlan',operationId:'plan-'+kind,payload:{id:plan.id,plannedAmount:plan.plannedAmount}},b.options).state;
+    assert.equal(edited.plans.find(row=>row.id===plan.id).category,kind==='fixed'?'固定費':'積立');
+    assert.deepEqual(plain(edited.settings),legacy.settings);
+  }
+  const paid=D.reconcileBankFixedExpenses(legacy,{...b.options,now:'2026-10-05T03:00:00.000Z'});
+  assert.equal(paid.createdExpenseIds.length,1);
+  assert.equal(paid.state.expenses[0].category,'固定費');
+  assert.equal(paid.state.plans.find(row=>row.kind==='fixed'&&row.month==='2026-10').category,'食費');
+  assert.equal(D.reconcileBankFixedExpenses(paid.state,{...b.options,now:'2026-10-05T03:00:00.000Z'}).changed,false);
+});
+
+test('fixed attributes control new writes and manual category selection never silently creates a fixed expense', () => {
+  const b=book();
+  expense(b,{category:'食費',fixed:true});
+  assert.equal(b.state.expenses[0].category,'固定費');
+  b.run('upsertExpense',{id:'expense',category:'美容',memo:'変更'});
+  assert.equal(b.state.expenses[0].category,'固定費');
+  b.run('upsertExpense',{id:'expense',fixed:false});
+  assert.equal(b.state.expenses[0].fixed,false);
+  assert.equal(b.state.expenses[0].category,'その他');
+  b.attempt('upsertExpense',{id:'expense',category:'固定費'});
+  b.attempt('upsertExpense',{id:'manual-fixed-category',useDate:'2026-10-05',amount:1000,category:'固定費'});
+  for(const category of D.CATEGORIES){
+    const row=expense(b,{id:'ordinary-'+category,category});
+    assert.equal(row.category,category);
+    assert.equal(row.fixed,false);
+  }
+});
+
+test('legacy fixed outflows subtract partial, full and cross-month savings funding once and keep deposit totals separate', () => {
+  const b=book('2026-11-05T03:00:00.000Z');
+  saving(b);
+  expense(b,{id:'partial',useDate:'2026-10-05',amount:10000,fixed:true,fundingSettingId:'saving',category:'必要経費'});
+  expense(b,{id:'full',useDate:'2026-10-05',amount:10000,fixed:true,fundingSettingId:'saving',category:'積立'});
+  expense(b,{id:'ordinary',useDate:'2026-10-05',amount:1000,category:'必要経費'});
+  withdrawal(b,{expenseId:'partial',date:'2026-11-02',amount:4000});
+  withdrawal(b,{id:'full-withdrawal',expenseId:'full',date:'2026-11-02',amount:10000});
+  deposit(b,{date:'2026-10-06',amount:2000});
+  const legacy=plain(b.state);
+  legacy.settings[0].category='必要経費';
+  legacy.expenses.find(row=>row.id==='partial').category='必要経費';
+  legacy.expenses.find(row=>row.id==='full').category='積立';
+  const before=JSON.stringify(legacy);
+  const s=D.summarize(legacy,'2026-10');
+  assert.equal(s.expenses,21000);
+  assert.equal(s.fixedTotal,20000);
+  assert.equal(s.categories['必要経費'],11000);
+  assert.equal(s.categories['積立'],10000);
+  assert.equal(s.outflowCategories['固定費'],6000);
+  assert.equal(s.outflowCategories['必要経費'],1000);
+  assert.equal(s.outflowCategories['積立'],2000);
+  assert.equal(s.salaryOutflow,9000);
+  assert.equal(Object.values(s.outflowCategories).reduce((total,n)=>total+n,0),s.salaryOutflow);
+  assert.equal(s.outflowItems.reduce((total,row)=>total+row.amount,0),s.salaryOutflow);
+  assert.equal(s.outflowItems.some(row=>row.id==='full'),false);
+  assert.equal(s.outflowItems.find(row=>row.id==='partial').savingsCovered,4000);
+  assert.equal(D.summarize(legacy,'2026-11').salaryOutflow,0);
+  assert.equal(JSON.stringify(legacy),before);
 });

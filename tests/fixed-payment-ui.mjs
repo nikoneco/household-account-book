@@ -25,6 +25,8 @@ try{
   const row=page.locator('.entry').filter({hasText:name});await row.getByRole('button',{name:'編集',exact:true}).click();
   const f=page.locator('#expense-form');assert.equal(await f.locator('[name=useDate]').inputValue(),month+'-01');
   assert.equal(await f.locator('[name=accountingMonth]').inputValue(),month);
+  assert.equal(await f.locator('[name=category]').inputValue(),'固定費');
+  assert.equal(await f.locator('input[name=category][readonly]').count(),1);
   await click('キャンセル');await click('履歴');
  }
  await click('ホーム');assert.equal(await page.locator('.big-money').innerText(),'¥-6,000');
@@ -35,6 +37,13 @@ try{
  const billingMonth=await f.locator('[name=accountingMonth]').inputValue();assert.notEqual(billingMonth,month);
  await f.locator('.expense-options summary').click();await f.locator('[name=fixed]').check();
  assert.equal(await f.locator('[name=useDate]').inputValue(),month+'-01');assert.equal(await f.locator('[name=accountingMonth]').inputValue(),month);
+ assert.equal(await f.locator('input[name=category][readonly]').inputValue(),'固定費');
+ await f.locator('[name=fixed]').uncheck();
+ assert.equal(await f.locator('select[name=category] option').count(),9);
+ assert.equal(await f.locator('select[name=category] option[value="固定費"]').count(),0);
+ await f.locator('[name=category]').selectOption('被服費');await f.locator('[name=fixed]').check();await f.locator('[name=fixed]').uncheck();
+ assert.equal(await f.locator('[name=category]').inputValue(),'被服費','Toggling fixed preserves the ordinary purchase classification');
+ await f.locator('[name=fixed]').check();
  await f.locator('[name=amount]').fill('400');await f.locator('[name=description]').fill('固定費の補足');
  await f.getByRole('button',{name:'支出を保存',exact:true}).click();await ready();
  await click('履歴');assert.equal(await page.locator('.entry').count(),4);

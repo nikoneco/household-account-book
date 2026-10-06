@@ -18,21 +18,29 @@ try{
   const click=name=>page.getByRole('button',{name,exact:true}).click();
   const ready=()=>page.waitForFunction(()=>document.querySelector('#main').getAttribute('aria-busy')==='false');
   await click('サンプルで試す');await click('毎月の設定');
-  for(const [kind,name,amount,category] of [
+  for(const [kind,name,amount] of [
     ['saving','コンタクトレンズ',100,'積立'],['fixed','通信費',100,'必要経費'],
     ['saving','乳液',100,'美容'],['fixed','衣類の定期購入',100,'被服費'],
     ['saving','たかちゃん誕生日',0,'積立']
   ]){
     const f=page.locator('#setting-form');await f.locator('[name=kind]').selectOption(kind);
     await f.locator('[name=name]').fill(name);await f.locator('[name=plannedAmount]').fill(String(amount));
-    await f.locator('[name=category]').selectOption(category);
+    assert.equal(await f.locator('[name=category]').count(),0,'Monthly classification follows kind, with no selector');
     if(kind==='saving')await f.locator('[name=openingBalance]').fill('1000');
     await f.getByRole('button',{name:'項目を追加',exact:true}).click();await ready();
     await page.locator('.setting-row').filter({hasText:name}).waitFor();
     if(kind==='saving')await page.locator('.monthly-form').filter({hasText:name}).waitFor();
     await ready();
   }
-  assert.deepEqual(await page.locator('[data-setting-kind]').evaluateAll(ns=>ns.map(n=>n.dataset.settingKind)),['fixed','saving']);
+  assert.deepEqual(await page.locator('[data-setting-kind]').evaluateAll(ns=>ns.map(n=>n.dataset.settingKind)),['saving','fixed']);
+  assert.deepEqual(await page.locator('[data-setting-total]').evaluateAll(ns=>ns.map(n=>n.dataset.settingTotal)),['saving','fixed']);
+  for(const kind of ['saving','fixed']){
+    const group=page.locator(`[data-setting-kind=${kind}]`);
+    for(const text of await group.locator('.setting-row .muted').allTextContents())assert.ok(text.includes(kind==='saving'?'積立':'固定費'),text);
+    await group.getByRole('button',{name:'編集',exact:true}).first().click();
+    assert.equal(await page.locator('#setting-form [name=category]').count(),0,'Editing has no classification selector either');
+    await click('キャンセル');
+  }
   assert.deepEqual(await page.locator('[data-setting-kind=fixed] h3').allTextContents(),['通信費','衣類の定期購入']);
   assert.deepEqual(await page.locator('[data-setting-kind=saving] h3').allTextContents(),['コンタクトレンズ','乳液','たかちゃん誕生日']);
   const fixed=page.locator('[data-setting-kind=fixed]'),saving=page.locator('[data-setting-kind=saving]');
@@ -77,6 +85,50 @@ try{
   await click('履歴');page.once('dialog',d=>d.accept());
   await page.locator('.entry').filter({hasText:'乳液'}).filter({hasText:'¥70'}).getByRole('button',{name:'削除',exact:true}).click();await ready();await click('ホーム');
   assert.equal(await row('乳液').locator('.saving-item-paid').count(),0,'Deleted deposit removes badge');
+  const order=['食費','酒','外食','趣味','被服費','美容','必要経費','積立','固定費','その他'];
+  assert.deepEqual(await page.locator('.outflow-category').evaluateAll(ns=>ns.map(n=>n.dataset.category)),order);
+  const outflow=category=>page.locator('.outflow-category').filter({has:page.locator(`summary > span`,{hasText:new RegExp('^'+category+'$')})});
+  assert.equal(await outflow('固定費').locator('summary strong').innerText(),'¥200');
+  assert.equal(await outflow('積立').locator('summary strong').innerText(),'¥140');
+  assert.equal(await outflow('必要経費').locator('summary strong').innerText(),'¥0');
+  assert.equal(await page.locator('[data-outflow-total]').innerText(),'¥340');
+  const requests=[];page.on('request',r=>requests.push(r.url()));
+  await page.context().setOffline(true);
+  await outflow('固定費').locator('summary').click();
+  await outflow('積立').locator('summary').click();
+  await outflow('その他').locator('summary').click();
+  await row('コンタクトレンズ').locator('summary').click();
+  await row('たかちゃん誕生日').locator('summary').click();
+  assert.equal(await outflow('固定費').locator('.outflow-entry').count(),2);
+  assert.equal(await outflow('積立').locator('.outflow-entry').count(),2);
+  assert.equal(await outflow('その他').locator('.hint').innerText(),'この分類の出費はありません。');
+  assert.deepEqual(requests,[],'Accordion expansion uses only loaded device data');
+  await page.context().setOffline(false);
+  const hierarchy=await page.evaluate(()=>{
+    const bg=n=>getComputedStyle(n).backgroundColor;
+    const q=s=>document.querySelector(s);
+    return {outflowHeading:bg(q('[data-category="固定費"] summary')),outflowBody:bg(q('[data-category="固定費"] .outflow-category-items')),outflowStripe:bg(q('[data-category="固定費"] .outflow-entry:nth-child(2)')),savingHeading:bg(q('.saving-item[open] summary')),savingBody:bg(q('.saving-item[open] .saving-item-body')),savingStripe:bg(q('.saving-item[open] .account-line:nth-child(2)'))};
+  });
+  assert.notEqual(hierarchy.outflowHeading,hierarchy.outflowBody);
+  assert.notEqual(hierarchy.outflowStripe,hierarchy.outflowBody);
+  assert.notEqual(hierarchy.savingHeading,hierarchy.savingBody);
+  assert.notEqual(hierarchy.savingStripe,hierarchy.savingBody);
+  const textColors=await page.locator('.outflow-category[open] summary,.outflow-entry,.outflow-entry .muted,.saving-item[open] summary,.saving-item[open] .account-line,.saving-item[open] .hint').evaluateAll(ns=>ns.map(n=>{
+    let parent=n,bg;while(parent){bg=getComputedStyle(parent).backgroundColor;if(bg!=='rgba(0, 0, 0, 0)')break;parent=parent.parentElement;}
+    return {fg:getComputedStyle(n).color,bg};
+  }));
+  const minContrast=Math.min(...textColors.map(c=>contrast(c.fg,c.bg)));
+  assert.ok(minContrast>=4.5,`Accordion text minimum contrast ${minContrast}`);
+  await outflow('固定費').locator('summary').focus();
+  const focusColors=await outflow('固定費').locator('summary').evaluate(n=>({fg:getComputedStyle(n).outlineColor,bg:getComputedStyle(n).backgroundColor,width:getComputedStyle(n).outlineWidth}));
+  assert.notEqual(focusColors.width,'0px');assert.ok(contrast(focusColors.fg,focusColors.bg)>=3);
+  if(!origin.includes('github')){
+    const markup=await page.locator('#outflow-breakdown,.saving-item').evaluateAll(ns=>ns.map(n=>n.outerHTML).join(''));
+    const classes=['is-hover','is-focus-visible','is-active'];
+    const states=classes.map(c=>`<details class="outflow-category"><summary class="category outflow-category-summary ${c}"><span>食費</span><meter class="bar" min="0" max="100" value="50"></meter><strong>¥50</strong></summary></details>`).join('');
+    await writeFile('.local/accordion-reading-surfaces.preview.html',`<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>内訳の表示状態</title><style>${await readFile('web/style.css','utf8')}</style><body><main class="app-shell"><h1>開閉・空・入金ボタン無効・操作状態</h1>${markup}${states}</main></body></html>`);
+    await writeFile('.local/classification-release/ui-contrast.json',JSON.stringify({minTextContrast:minContrast,focusContrast:contrast(focusColors.fg,focusColors.bg),hierarchy},null,2));
+  }
   for(const width of [320,375,414,768]){
     await page.setViewportSize({width,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     assert.ok(await row('コンタクトレンズ').locator('summary').evaluate(n=>n.getBoundingClientRect().height>=44));

@@ -2,7 +2,9 @@ import { createTransport, createDemoTransport } from './transport.js';
 import { SESSION_STORAGE_KEY, readSession, saveSession, clearSession } from './session.js';
 
 const D = globalThis.HouseholdDomain;
-const CATEGORIES = D.CATEGORIES;
+const CATEGORIES = D.CATEGORIES.filter(category=>category!=='固定費');
+const OUTFLOW_CATEGORIES = D.OUTFLOW_CATEGORIES;
+const expenseCategory = expense=>expense.fixed?'固定費':expense.category;
 const PAYMENTS = {cash:'現金',bank:'銀行',card:'カード'};
 const main = document.querySelector('#main');
 const yen = value => '¥' + Number(value || 0).toLocaleString('ja-JP');
@@ -26,7 +28,7 @@ const settingOptions = (items, selected = '', empty = '指定しない') => `<op
 const field = (name,label,value,type='text',extra='') => `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;
 const moneyField = (name,label,value,extra='required') => field(name,label,value,'number',`min="0" step="1" inputmode="numeric" ${extra}`);
 const paymentField = (value='cash') => `<label>支払方法<select name="paymentMethod">${options(Object.keys(PAYMENTS),value,key=>PAYMENTS[key])}</select></label>`;
-const categoryField = (value='食費') => `<label>分類<select name="category">${options(CATEGORIES,value)}</select></label>`;
+const categoryField = (value='食費',fixed=false) => `<label id="expense-category">分類${fixed?'<input name="category" value="固定費" readonly>':`<select name="category">${options(CATEGORIES,value)}</select>`}</label>`;
 function message(text, error = false) { const el = document.querySelector(error ? '#error' : '#message'); el.textContent = text; el.hidden = !text; }
 function clearMessages() { message(''); message('',true); }
 function sessionSaveNotice(result) {
@@ -68,7 +70,7 @@ function renderHome() {
   const s = summary();
   const categoryAmounts = s.outflowCategories;
   const openCategories = new Set(Array.from(document.querySelectorAll('#outflow-breakdown details[open]')).map(el=>el.dataset.category));
-  const categoryRows = CATEGORIES.map(category=>{
+  const categoryRows = OUTFLOW_CATEGORIES.map(category=>{
     const items=s.outflowItems.filter(item=>item.category===category).sort((a,b)=>b.date.localeCompare(a.date));
     const details=items.length?items.map(item=>`<div class="outflow-entry"><div><span class="outflow-entry-name">${esc(item.description)}</span><span class="muted">${esc(dateLabel(item.date))} · ${item.kind==='deposit'?'積立入金':'購入・支払'}${item.savingsCovered?' ／ 購入 '+yen(item.purchaseAmount)+' のうち給与分':''}</span></div><strong class="number">${yen(item.amount)}</strong></div>`).join(''):'<p class="hint">この分類の出費はありません。</p>';
     return `<details class="outflow-category" data-category="${esc(category)}"${openCategories.has(category)?' open':''}><summary class="category outflow-category-summary"><span>${esc(category)}</span><meter class="bar" min="0" max="${s.salaryOutflow || 1}" value="${categoryAmounts[category]}" aria-label="${esc(category)}の割合"></meter><strong>${yen(categoryAmounts[category])}</strong></summary><div class="outflow-category-items">${details}</div></details>`;
@@ -87,7 +89,7 @@ function expenseForm() {
     ${editing?'<h2>支出を編集</h2>':''}
     <form id="expense-form" aria-label="支出の登録"><div class="form-grid">
       ${field('useDate','使った日',e.useDate,'date','required')}${moneyField('amount','金額（円）',e.amount,'required min="1"')}
-      ${categoryField(e.category)}${paymentField(e.paymentMethod)}
+      ${categoryField(e.category,!!e.fixed)}${paymentField(e.paymentMethod)}
       <label class="full">内容<input name="description" value="${esc(e.description)}" maxlength="200" placeholder="スーパー、ランチなど"></label>
     </div>
     <p class="hint accounting-note">計上月：<output id="accounting-label">${esc(monthLabel(e.accountingMonth))}</output></p>
@@ -173,8 +175,8 @@ function renderHistory() {
   return heading('履歴','計上月ごとの支出と積立の移動')+`<section class="panel"><div class="row-head"><h2>支出</h2><span class="muted">${groups.length}件 · ${yen(expenses.reduce((n,e)=>n+e.amount,0))}</span></div>${groups.length?groups.map(group=>{
     const e=group.items[0],date=purchaseDate(group),title=purchaseTitle(group);
     const methods=[...new Set(group.items.map(item=>PAYMENTS[item.paymentMethod]))].join('・');
-    const fixedLabel=group.items.every(item=>item.fixed)?' · 固定費':group.items.some(item=>item.fixed)?' · 一部固定費':'';
-    return `<article class="entry history-entry"><button type="button" class="history-open" data-action="expense-detail" data-id="${esc(e.id)}" aria-label="${esc(dateLabel(date)+' '+title+'の詳細')}"><span class="entry-date">${date.slice(8)}<small>${date.slice(5,7)}月</small></span><span class="entry-copy"><span class="entry-title">${esc(title)}</span><span class="muted">${group.receipt?`${group.items.length}明細 · `:esc(e.category)+' · '}${methods}${fixedLabel}<br>利用日 ${esc(date)} ／ 計上月 ${esc(month)}</span></span><span class="entry-right"><strong>${yen(group.items.reduce((n,item)=>n+item.amount,0))}</strong><span class="detail-cue">詳細 ›</span></span></button>${!group.receipt?`<div class="entry-actions">${expenseActions(e)}</div>`:''}</article>`;
+    const fixedLabel=!group.receipt?'':group.items.every(item=>item.fixed)?' · 固定費':group.items.some(item=>item.fixed)?' · 一部固定費':'';
+    return `<article class="entry history-entry"><button type="button" class="history-open" data-action="expense-detail" data-id="${esc(e.id)}" aria-label="${esc(dateLabel(date)+' '+title+'の詳細')}"><span class="entry-date">${date.slice(8)}<small>${date.slice(5,7)}月</small></span><span class="entry-copy"><span class="entry-title">${esc(title)}</span><span class="muted">${group.receipt?`${group.items.length}明細 · `:esc(expenseCategory(e))+' · '}${methods}${fixedLabel}<br>利用日 ${esc(date)} ／ 計上月 ${esc(month)}</span></span><span class="entry-right"><strong>${yen(group.items.reduce((n,item)=>n+item.amount,0))}</strong><span class="detail-cue">詳細 ›</span></span></button>${!group.receipt?`<div class="entry-actions">${expenseActions(e)}</div>`:''}</article>`;
   }).join(''):'<div class="empty"><strong>この月の支出はありません。</strong>「登録」から支出を記録できます。</div>'}</section><section class="panel"><h2>積立の移動</h2>${transfers.length?transfers.map(t=>`<article class="entry"><div class="entry-date">${t.date.slice(8)}<small>${t.date.slice(5,7)}月</small></div><div><h3>${esc(savings().find(s=>s.id===t.settingId)?.name||'積立')}</h3><p class="muted">${t.kind==='deposit'?'入金':'取り崩し'} · ${esc(t.date)}${t.expenseId?' · 購入に関連付け済み':''}</p>${t.memo?`<p class="muted">${esc(t.memo)}</p>`:''}</div><div class="entry-right"><strong>${yen(t.amount)}</strong>${button('delete-transfer','削除',t.id,'danger small')}</div></article>`).join(''):'<div class="empty">この月の入金・取り崩しはありません。</div>'}</section><section id="image-preview" hidden></section>`;
 }
 function closeDetail() {
@@ -189,14 +191,14 @@ function showExpenseDetail(id) {
   const receipt=list('receipts').find(r=>r.id===expense.receiptId);
   const group={receipt,items},date=purchaseDate(group),title=purchaseTitle(group);
   const dialog=document.createElement('dialog');dialog.id='expense-detail';dialog.className='expense-detail';dialog.setAttribute('aria-labelledby','expense-detail-title');
-  dialog.innerHTML=`<div class="row-head detail-head"><div><p class="muted">${esc(dateLabel(date))}</p><h2 id="expense-detail-title">${esc(title)}</h2></div>${button('close-detail','閉じる')}</div><p class="hint">金額は数量分の合計です。</p><div class="purchase-items">${items.map(e=>`<article class="purchase-item" data-expense-id="${esc(e.id)}"><div class="row-head"><h3>${esc(e.description||e.category)}</h3><strong class="number">${yen(e.amount)}</strong></div><p class="muted">${esc(e.category)}${e.quantity!=null?' × '+e.quantity:' · 数量未確認'} · ${PAYMENTS[e.paymentMethod]}${e.fixed?' · 固定費':''}</p><p class="muted">利用日 ${esc(e.useDate)} ／ 計上月 ${esc(e.accountingMonth)}</p>${e.fundingSettingId?`<p class="muted">積立：${esc(savings().find(x=>x.id===e.fundingSettingId)?.name||'未設定')}</p>`:''}${e.memo?`<p class="muted">${esc(e.memo)}</p>`:''}${sessionRole==='editor'?`<div class="entry-actions">${expenseActions(e)}</div>`:''}</article>`).join('')}</div><div class="account-line emphasis"><span>購入合計</span><strong>${yen(items.reduce((n,e)=>n+e.amount,0))}</strong></div>${items.some(e=>e.accountingMonth!==month)?`<p class="hint">${esc(monthLabel(month))}に計上：${yen(items.filter(e=>e.accountingMonth===month).reduce((n,e)=>n+e.amount,0))}。履歴の合計は表示月の明細だけです。</p>`:''}${receipt?`<div class="form-actions">${button('receipt-image','レシート画像を見る',receipt.id)}</div>`:''}`;
+  dialog.innerHTML=`<div class="row-head detail-head"><div><p class="muted">${esc(dateLabel(date))}</p><h2 id="expense-detail-title">${esc(title)}</h2></div>${button('close-detail','閉じる')}</div><p class="hint">金額は数量分の合計です。</p><div class="purchase-items">${items.map(e=>`<article class="purchase-item" data-expense-id="${esc(e.id)}"><div class="row-head"><h3>${esc(e.description||e.category)}</h3><strong class="number">${yen(e.amount)}</strong></div><p class="muted">${esc(expenseCategory(e))}${e.quantity!=null?' × '+e.quantity:' · 数量未確認'} · ${PAYMENTS[e.paymentMethod]}</p><p class="muted">利用日 ${esc(e.useDate)} ／ 計上月 ${esc(e.accountingMonth)}</p>${e.fundingSettingId?`<p class="muted">積立：${esc(savings().find(x=>x.id===e.fundingSettingId)?.name||'未設定')}</p>`:''}${e.memo?`<p class="muted">${esc(e.memo)}</p>`:''}${sessionRole==='editor'?`<div class="entry-actions">${expenseActions(e)}</div>`:''}</article>`).join('')}</div><div class="account-line emphasis"><span>購入合計</span><strong>${yen(items.reduce((n,e)=>n+e.amount,0))}</strong></div>${items.some(e=>e.accountingMonth!==month)?`<p class="hint">${esc(monthLabel(month))}に計上：${yen(items.filter(e=>e.accountingMonth===month).reduce((n,e)=>n+e.amount,0))}。履歴の合計は表示月の明細だけです。</p>`:''}${receipt?`<div class="form-actions">${button('receipt-image','レシート画像を見る',receipt.id)}</div>`:''}`;
   dialog.addEventListener('cancel',event=>{event.preventDefault();closeDetail();});
   dialog.addEventListener('click',event=>{if(event.target===dialog){const rect=dialog.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)closeDetail();}});
   document.body.append(dialog);dialog.showModal();
 }
 function settingForm() {
-  const s=settingEdit||{kind:'fixed',name:'',plannedAmount:'',category:'必要経費',paymentMethod:'bank',openingBalance:0,targetAmount:0,active:true};
-  return `<section class="panel scroll-anchor" id="setting-panel"><h2>${settingEdit?'設定を編集':'毎月の項目を追加'}</h2>${formStart('setting-form')}<label>種類<select name="kind" ${settingEdit?'disabled':''}>${options(['fixed','saving'],s.kind,k=>k==='fixed'?'固定費':'積立')}</select></label>${field('name','名前',s.name,'text','required maxlength="100"')}${moneyField('plannedAmount','毎月の予定金額（円）',s.plannedAmount)}${paymentField(s.paymentMethod)}${categoryField(s.category)}${moneyField('openingBalance','開始残高（積立）',s.openingBalance)}${moneyField('targetAmount','目標金額（積立・任意）',s.targetAmount,'')}<label class="full">メモ<textarea name="memo" maxlength="500">${esc(s.memo)}</textarea></label>${formEnd(settingEdit?'設定を保存':'項目を追加',settingEdit?'cancel-setting':'')}<p class="hint">固定費は現金・銀行・カードすべて、毎月1日付・当月分として予定額を自動記録します。0円は記録しません。変更は次に作る月の予定へ反映し、作成済みの予定・実績は変えません。</p></section>`;
+  const s=settingEdit||{kind:'fixed',name:'',plannedAmount:'',paymentMethod:'bank',openingBalance:0,targetAmount:0,active:true};
+  return `<section class="panel scroll-anchor" id="setting-panel"><h2>${settingEdit?'設定を編集':'毎月の項目を追加'}</h2>${formStart('setting-form')}<label>種類<select name="kind" ${settingEdit?'disabled':''}>${options(['fixed','saving'],s.kind,k=>k==='fixed'?'固定費':'積立')}</select></label>${field('name','名前',s.name,'text','required maxlength="100"')}${moneyField('plannedAmount','毎月の予定金額（円）',s.plannedAmount)}${paymentField(s.paymentMethod)}${moneyField('openingBalance','開始残高（積立）',s.openingBalance)}${moneyField('targetAmount','目標金額（積立・任意）',s.targetAmount,'')}<label class="full">メモ<textarea name="memo" maxlength="500">${esc(s.memo)}</textarea></label>${formEnd(settingEdit?'設定を保存':'項目を追加',settingEdit?'cancel-setting':'')}<p class="hint">固定費は現金・銀行・カードすべて、毎月1日付・当月分として予定額を自動記録します。0円は記録しません。変更は次に作る月の予定へ反映し、作成済みの予定・実績は変えません。</p></section>`;
 }
 function updateSettingFields() {
   const form=document.querySelector('#setting-form');
@@ -209,10 +211,10 @@ function updateSettingFields() {
 function renderSettings() {
   const plans=list('plans').filter(p=>p.month===month&&p.kind==='saving');
   const total=kind=>'¥'+list('settings').filter(s=>s.active&&s.kind===kind).reduce((sum,s)=>sum+BigInt(s.plannedAmount),0n).toLocaleString('ja-JP');
-  const totals=`<section class="panel settings-totals" aria-label="毎月の設定額の合計"><h2>月額の合計</h2><div class="account-line"><span>固定費</span><strong class="number" data-setting-total="fixed">${total('fixed')}</strong></div><div class="account-line"><span>積立</span><strong class="number" data-setting-total="saving">${total('saving')}</strong></div><p class="hint">毎月の設定額の合計です。停止中の項目や、この月だけの予定変更は含みません。</p></section>`;
-  const groups=['fixed','saving'].map(kind=>{
+  const totals=`<section class="panel settings-totals" aria-label="毎月の設定額の合計"><h2>月額の合計</h2><div class="account-line"><span>積立</span><strong class="number" data-setting-total="saving">${total('saving')}</strong></div><div class="account-line"><span>固定費</span><strong class="number" data-setting-total="fixed">${total('fixed')}</strong></div><p class="hint">毎月の設定額の合計です。停止中の項目や、この月だけの予定変更は含みません。</p></section>`;
+  const groups=['saving','fixed'].map(kind=>{
     const label=kind==='fixed'?'固定費':'積立',items=list('settings').filter(s=>s.kind===kind);
-    return `<section class="panel settings-group settings-group--${kind}" data-setting-kind="${kind}" aria-label="${label}の設定"><h2>${label}</h2>${items.length?items.map(s=>`<div class="setting-row"><div class="row-head"><div class="setting-copy"><h3>${esc(s.name)}</h3><span class="muted">${esc(s.category)}${kind==='fixed'?' · '+PAYMENTS[s.paymentMethod]:''} · ${yen(s.plannedAmount)} / 月${!s.active?' · 停止中':''}</span></div><div class="setting-actions">${button('edit-setting','編集',s.id)}${button('toggle-setting',s.active?'停止':'再開',s.id)}</div></div></div>`).join(''):`<p class="hint">${label}はありません。</p>`}</section>`;
+    return `<section class="panel settings-group settings-group--${kind}" data-setting-kind="${kind}" aria-label="${label}の設定"><h2>${label}</h2>${items.length?items.map(s=>`<div class="setting-row"><div class="row-head"><div class="setting-copy"><h3>${esc(s.name)}</h3><span class="muted">${label}${kind==='fixed'?' · '+PAYMENTS[s.paymentMethod]:''} · ${yen(s.plannedAmount)} / 月${!s.active?' · 停止中':''}</span></div><div class="setting-actions">${button('edit-setting','編集',s.id)}${button('toggle-setting',s.active?'停止':'再開',s.id)}</div></div></div>`).join(''):`<p class="hint">${label}はありません。</p>`}</section>`;
   }).join('');
   return heading('毎月の設定','固定費と積立の予定')+totals+groups+`${settingForm()}<section class="panel"><h2>${esc(month)} の予定</h2><p class="hint">積立の予定をこの月だけ変えたいときに。予定の変更だけでは入金実績は増えません。</p>${plans.length?plans.map(p=>`<form class="monthly-form" data-plan-id="${esc(p.id)}"><h3>${esc(p.name)} <span class="pill">${p.kind==='saving'?'積立':'固定費'}</span></h3><div class="form-grid">${moneyField('plannedAmount','この月の予定金額',p.plannedAmount)}<label>メモ<input name="memo" value="${esc(p.memo)}" maxlength="500"></label></div><div class="form-actions"><button type="submit" class="quiet">この月の予定を保存</button></div></form>`).join(''):'<div class="empty">この月の積立予定はありません。積立を追加すると、今月以降の予定が作られます。</div>'}</section>`;
 }
@@ -234,6 +236,7 @@ function render() {
   document.querySelectorAll('[data-page]').forEach(el=>{if(el.dataset.page===page)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
   updateTransferBalance();
   updateSettingFields();
+  updateExpenseCategory();
   setBusy(busy);
 }
 function setBusy(value) {
@@ -340,9 +343,10 @@ document.addEventListener('change',async event=>{
     if(date){if(f.elements.fixed.checked)f.elements.useDate.value=date.slice(0,7)+'-01';f.elements.accountingMonth.value=!f.elements.fixed.checked&&f.elements.paymentMethod.value==='card'?D.cardMonth(date):date.slice(0,7);}
   }
   if(el.closest('#expense-form') && el.name==='planId'){
-    const p=list('plans').find(x=>x.id===el.value);if(p){const f=el.form;f.elements.amount.value=p.plannedAmount;f.elements.category.value=p.category;f.elements.paymentMethod.value=p.paymentMethod;f.elements.description.value=p.name;f.elements.fixed.checked=true;f.elements.useDate.value=p.month+'-01';f.elements.accountingMonth.value=p.month;}
+    const p=list('plans').find(x=>x.id===el.value);if(p){const f=el.form;f.elements.amount.value=p.plannedAmount;f.elements.paymentMethod.value=p.paymentMethod;f.elements.description.value=p.name;f.elements.fixed.checked=true;f.elements.useDate.value=p.month+'-01';f.elements.accountingMonth.value=p.month;}
   }
   if(el.closest('#expense-form')){
+    updateExpenseCategory();
     const accounting=el.form.elements.accountingMonth.value;
     if(accounting){
       document.querySelector('#accounting-label').textContent=monthLabel(accounting);
@@ -481,6 +485,18 @@ async function logout() {
   // Clear the UI/storage immediately even if the revocation request is slow/offline.
   Promise.resolve(previous?.logout?.()).catch(()=>{}).finally(()=>previous?.close?.());
   try{await initializeConfig();}catch(error){message(error.message,true);}
+}
+function updateExpenseCategory() {
+  const form=document.querySelector('#expense-form');if(!form)return;
+  const control=form.elements.category, fixed=form.elements.fixed.checked||!!form.elements.planId.value;
+  const label=control.closest('label');
+  if(fixed&&control.tagName==='SELECT'){
+    form.dataset.purchaseCategory=control.value;
+    label.innerHTML='分類<input name="category" value="固定費" readonly>';
+  }else if(!fixed&&control.tagName==='INPUT'){
+    const previous=CATEGORIES.includes(form.dataset.purchaseCategory)?form.dataset.purchaseCategory:'その他';
+    label.innerHTML=`分類<select name="category">${options(CATEGORIES,previous)}</select>`;
+  }
 }
 function prepareLogin(loginTransport) {
   const preparedAt=Date.now();
