@@ -11,7 +11,7 @@ test('stored app session is bounded, target-scoped and excludes ledger/OAuth dat
  assert.deepEqual(Object.keys(stored).sort(),['expiresAt','session','target']);
  assert.deepEqual(api.readSession(config),valid);
  assert.equal(api.readSession({...config,clientId:'other'}),null);assert.equal(items.size,0);
- for(const value of ['not-json',null,{...stored,expiresAt:1},{...stored,expiresAt:Date.now()+7200000},{...stored,session:'bad-token'}]){
+ for(const value of ['not-json',null,{...stored,expiresAt:1},{...stored,expiresAt:Date.now()+31*86400000},{...stored,session:'bad-token'}]){
   items.set(api.SESSION_STORAGE_KEY,typeof value==='string'?value:JSON.stringify(value));
   assert.equal(api.readSession(config),null);assert.equal(items.size,0);
  }
@@ -30,16 +30,18 @@ test('save reports precise nonsecret reasons and detects discarded writes',async
  const api=await apiReady,items=new Map();
  globalThis.localStorage={getItem:key=>items.get(key)||null,setItem:(key,value)=>items.set(key,value),removeItem:key=>items.delete(key)};
  const valid={session:'a'.repeat(64),expiresAt:Date.now()+3500000};
- for(const [value,reason] of [[{...valid,session:'invalid'},'token'],[{...valid,expiresAt:String(valid.expiresAt)},'number'],[{...valid,expiresAt:1},'late'],[{...valid,expiresAt:Date.now()+3960000},'too_far']]){
+ for(const [value,reason] of [[{...valid,session:'invalid'},'token'],[{...valid,expiresAt:String(valid.expiresAt)},'number'],[{...valid,expiresAt:1},'late'],[{...valid,expiresAt:Date.now()+31*86400000},'too_far']]){
   const result=api.saveSession(config,value);
   assert.deepEqual(result,{saved:false,reason});assert.equal(items.size,0);
   assert.deepEqual(Object.keys(result).sort(),['reason','saved']);
  }
- // Server/client clock skew must not silently discard a newly issued one-hour session.
- assert.equal(api.validSession({...valid,expiresAt:3900001},0),false);
- assert.equal(api.validSession({...valid,expiresAt:3900000},0),true);
- assert.equal(api.validSession({...valid,expiresAt:3600000},0),true);
- const skewed={...valid,expiresAt:Date.now()+3601500};
+ // Server/client clock skew must not discard a newly issued 30-day session.
+ const lifetime=30*86400000;
+ assert.equal(api.validSession({...valid,expiresAt:lifetime+300001},0),false);
+ assert.equal(api.validSession({...valid,expiresAt:lifetime+300000},0),true);
+ assert.equal(api.validSession({...valid,expiresAt:lifetime},0),true);
+ assert.equal(api.validSession({...valid,expiresAt:0},0),false);
+ const skewed={...valid,expiresAt:Date.now()+lifetime+1500};
  assert.deepEqual(api.saveSession(config,skewed),{saved:true,reason:'stored'});
  assert.deepEqual(api.readSession(config),skewed);
  globalThis.localStorage={getItem:()=>null,setItem:()=>{},removeItem:()=>{}};

@@ -279,3 +279,18 @@ Hallmarkの既存sage/paper・editorialコンポーネント範囲で実装。�
 Pages73a34b32はbuilt、Actions37327081798成功。公開13アセットが配信ブランチとバイト一致、SWはhousehold-shell-v0.1.8。ソース・通信差替えなしの公開サンプルでsettings-savings-uiの分離/色/コントラスト/個別開閉/入金状態/削除復帰/4幅が成功。画像はリポジトリ外Temp/household-settings-savings/public-settings.png・public-savings.png・public-savings-detail.png（サンプル金額）。
 
 通常Chromeで再読込すると既存セッションが復元され、本番の登録/レシート画面へ戻った。ホームの7項目が個別に閉じ、入金済2項目・残高を表示、コンタクトレンズだけ開いて予定/実績とdisabled入金ボタンを確認。毎月の設定の固定費→積立順と現在分類、履歴の10月固定費8件すべて01/10月表示を確認。ここでは保存ボタンを押していない。認証済み通常読込後も本番全10表が移行直後と完全一致し、自動再計上・レシート再処理なし。スマホ実機と次回日次実行は未確認。
+
+
+## 2026-10-06 ログイン保持・起動読込の改善
+
+妻の「頻繁なログアウト・更新時のログアウト・ログイン後の長い待ち」に対応。修正前の公開4主要ファイルとGAS草稿/公開v12はsource base dc256b8と一致。通常Chromeで復元7.2秒/7.0秒、別の再読込ではTIMEOUT後にログイン画面へ戻ることを観測。1時間/Google ID token期限への連動、CacheServiceだけへの依存、一時復元失敗がログイン画面に見える点を修正した。
+
+Googleコードのサーバー検証を維持し、ログインから固定30日（利用で延長なし）の家計簿専用セッションへ変更。サーバーはScript Propertiesにハッシュキー・権限・期限・client/originだけを保持し、生トークン/OAuthトークンは保存しない。期限/許可取消/降格は毎RPCで検証。旧cacheセッションは元の期限までだけ。期限切れ掃除と全体100件上限は既存の有効セッションを追い出さない。端末の保存はopaque token/期限/接続先だけで、家計記録/画像/Googleトークンを永続保存しない。
+
+復元の権限確認+データ取得をbootstrap 1RPCへ統合。9表の全列をUNFORMATTED_VALUE batchGet 1回で取得し、余分な列・非文字列ID・破損JSON・元の整合性検証・原子的な差分保存を保持。Google popupとchallenge準備を並行にし、古いchallengeの更新とAUTH_STATEの1回再準備を対応。一時失敗は保存を残し「再接続」「読み込みを再試行」を表示。未検証tokenは失効用だけに保持し、再接続画面のログアウトもサーバー失効へ届く。
+
+ローカル131/131、check、diff-check、build、公開候補13ファイル機密検索が成功。UI7本（login/ui-flow/settings-savings/receipt-upload/planned-deposit/layout/fixed-payment）成功。clockで30日期限・cache消失・Google期限超過・旧期限・許可取消・viewer・上限を確認。bootstrapのBUSY/TIMEOUT後のログアウトと、実transport browser fixtureで失効token再投入後の拒否、古い復元応答/Google callbackの競合を確認。独立レビューで発見した失効漏れを修正し、再固定12ファイルでPASS。レビュアー自身のserver/transport/session79件・login-uiも成功。調査/実装はSol High、レビューはAstra Highを要求したが、実モデルID/推論強度は照会不能。
+
+GAS v13の草稿反映・既存デプロイ更新・公開4ファイル一致・endpoint/access維持を確認。Pages 15ddfff3 built、Actions 37456768853 success、公開13ファイルが配信ブランチのGit blobとバイト一致（distとはテキスト改行正規化後の内容一致）、SW household-shell-v0.1.9。公開の通常Chromeでユーザー操作による実Googleログイン、保存期限約30日、3回再読込復元（5.6 / 5.4 / 5.0秒、うち旧セッション1回・新セッション2回）、別タブ開き直し、明示ログアウトを確認。家計の追加/編集/削除ボタンは押していない。速度はこのPC/回線での少数観測で、Google/GASの揺れは残る。
+
+QA: ページidentity/内容あり/エラーoverlayなし/画面画像/対象操作が成功。通常Chromeに拡張機能の非同期listener形式のメッセージ2件があったが、アプリには該当Chrome APIがなく、別の公開headless smokeではpage error0。ローカルの再接続画像はTemp/household-ui-qa/12-restore-retry.png、公開サンプルはTemp/household-startup-register/startup-receipt.png。スマホ実機の体感と30日間の実時間経過は未確認（期限はclockテスト）。新方式の開始は公開更新後に一度ログアウトして再Googleログイン。

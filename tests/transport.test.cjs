@@ -70,6 +70,71 @@ test('restore validates session on server before allowing ledger requests',async
  assert.equal(h.sent.at(-1).message.payload.operation,'load');h.transport.close();
 });
 
+test('bootstrap restore installs session only after role, expiry and state validation in one RPC',async()=>{
+ await apiReady;const saved={session:'a'.repeat(64),expiresAt:Date.now()+30*86400000};
+ const h=harness();h.ready();h.onSend=message=>h.respond(message,{role:'editor',expiresAt:saved.expiresAt,state:{schemaVersion:1,revision:4,expenses:[]}});
+ const result=await h.transport.restore(saved,{load:true});
+ assert.equal(result.state.revision,4);assert.equal(h.sent.length,1);assert.equal(h.sent[0].message.payload.operation,'bootstrap');
+ h.transport.close();
+ for(const bad of [{role:'bad'}, {expiresAt:1}, {expiresAt:Date.now()+31*86400000}, {state:null}, {state:{schemaVersion:1,revision:-1}}]){
+  const client=harness();client.ready();client.onSend=message=>client.respond(message,{role:'editor',expiresAt:saved.expiresAt,state:{schemaVersion:1,revision:0},...bad});
+  await assert.rejects(client.transport.restore(saved,{load:true}));
+  await assert.rejects(client.transport.load(),{code:'UNAUTHENTICATED'});client.transport.close();
+ }
+});
+
+test('transient bootstrap failure can retry without deleting saved token, logout wins during bootstrap',async()=>{
+ await apiReady;const h=harness();h.ready();const saved={session:'a'.repeat(64),expiresAt:Date.now()+30*86400000};
+ h.onSend=message=>h.emit({type:'household:response',channel:h.channel,id:message.id,ok:false,error:{code:'BUSY',message:'retry'}});
+ await assert.rejects(h.transport.restore(saved,{load:true}),{code:'BUSY'});assert.equal(saved.session,'a'.repeat(64));
+ h.onSend=message=>h.respond(message,{role:'editor',expiresAt:saved.expiresAt,state:{schemaVersion:1,revision:0}});
+ await h.transport.restore(saved,{load:true});
+ h.onSend=null;
+ const pending=h.transport.restore(saved,{load:true}),rejected=assert.rejects(pending,{code:'CLOSED'});
+ await new Promise(resolve=>setImmediate(resolve));const request=h.sent.at(-1).message;
+ h.onSend=message=>h.respond(message,{loggedOut:true});await h.transport.logout();
+ h.respond(request,{role:'editor',expiresAt:saved.expiresAt,state:{schemaVersion:1,revision:0}});await rejected;
+ await assert.rejects(h.transport.load(),{code:'UNAUTHENTICATED'});h.transport.close();
+});
+
+test('logout after failed bootstrap revokes known token without authorizing ledger access',async()=>{
+ await apiReady;
+ for(const failure of ['BUSY','TIMEOUT']){
+  const h=harness(20);h.ready();const saved={session:'a'.repeat(64),expiresAt:Date.now()+30*86400000};
+  const serverSessions=new Set([saved.session]);
+  h.onSend=message=>{
+   if(failure==='BUSY')h.emit({type:'household:response',channel:h.channel,id:message.id,ok:false,error:{code:'BUSY',message:'retry'}});
+  };
+  await assert.rejects(h.transport.restore(saved,{load:true}),{code:failure});
+  await assert.rejects(h.transport.load(),{code:'UNAUTHENTICATED'});
+  h.onSend=message=>{
+   assert.equal(message.method,'authLogout');serverSessions.delete(message.payload.session);h.respond(message,{loggedOut:true});
+  };
+  await h.transport.logout();assert.equal(serverSessions.size,0);
+  assert.equal(h.sent.filter(item=>item.message.method==='authLogout').length,1);
+  await h.transport.logout();assert.equal(h.sent.filter(item=>item.message.method==='authLogout').length,1);
+  h.transport.close();
+  const fresh=harness();fresh.ready();fresh.onSend=message=>{
+   assert.equal(serverSessions.has(message.payload.session),false);
+   fresh.emit({type:'household:response',channel:fresh.channel,id:message.id,ok:false,error:{code:'AUTH_REQUIRED',message:'revoked'}});
+  };
+  await assert.rejects(fresh.transport.restore(saved,{load:true}),{code:'AUTH_REQUIRED'});fresh.transport.close();
+ }
+});
+
+test('stale restore failure cannot discard newer failed restoration revocation candidate',async()=>{
+ await apiReady;const h=harness();h.ready();
+ const older=h.transport.restore({session:'a'.repeat(64)},{load:true}),olderRejected=assert.rejects(older,{code:'AUTH_REQUIRED'});
+ await new Promise(resolve=>setImmediate(resolve));const old=h.sent.at(-1).message;
+ const newer=h.transport.restore({session:'b'.repeat(64)},{load:true}),newerRejected=assert.rejects(newer,{code:'BUSY'});
+ await new Promise(resolve=>setImmediate(resolve));const current=h.sent.at(-1).message;
+ h.emit({type:'household:response',channel:h.channel,id:current.id,ok:false,error:{code:'BUSY',message:'retry'}});await newerRejected;
+ h.emit({type:'household:response',channel:h.channel,id:old.id,ok:false,error:{code:'AUTH_REQUIRED',message:'stale'}});await olderRejected;
+ h.onSend=message=>h.respond(message,{loggedOut:true});await h.transport.logout();
+ assert.deepEqual(h.sent.filter(item=>item.message.method==='authLogout').map(item=>item.message.payload.session),['a'.repeat(64),'b'.repeat(64)]);
+ await assert.rejects(h.transport.load(),{code:'UNAUTHENTICATED'});h.transport.close();
+});
+
 test('logout prevents pending login and restore responses from reauthenticating',async()=>{
  await apiReady;
  for(const action of ['login','restore']){

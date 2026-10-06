@@ -7,7 +7,9 @@ var HOUSEHOLD_TABLES_ = {
 var HOUSEHOLD_META_ = 'HB_Meta';
 var HOUSEHOLD_INBOX_ = 'HB_ReceiptInbox';
 var HOUSEHOLD_MAX_IMAGE_ = 8 * 1024 * 1024;
-var HOUSEHOLD_SESSION_SECONDS_ = 3600;
+var HOUSEHOLD_SESSION_SECONDS_ = 30 * 24 * 60 * 60;
+var HOUSEHOLD_SESSION_PREFIX_ = 'HOUSEHOLD_SESSION_V2_';
+var HOUSEHOLD_MAX_SESSIONS_ = 100;
 
 function doGet(e) {
   var channel = channel_(e && e.parameter && e.parameter.channel);
@@ -22,12 +24,10 @@ function doGet(e) {
 function authPrepare(channel) {
   channel = channel_(channel);
   authConfig_();
-  return locked_(function () {
-    var state = randomToken_();
-    CacheService.getScriptCache().put('login:' + sha256_(state),
-      JSON.stringify({ channel: channel, expiresAt: Date.now() + 120000 }), 120);
-    return { state: state };
-  });
+  var state = randomToken_();
+  CacheService.getScriptCache().put('login:' + sha256_(state),
+    JSON.stringify({ channel: channel, expiresAt: Date.now() + 120000 }), 120);
+  return { state: state };
 }
 
 function authLogin(input) {
@@ -65,16 +65,36 @@ function authLogin(input) {
   var claims = directGoogleClaims_(body.id_token, config);
   var role = accountRole_(claims, config);
   var session = randomToken_();
-  var expiresAt = Math.min(Date.now() + HOUSEHOLD_SESSION_SECONDS_ * 1000, claims.exp * 1000);
-  CacheService.getScriptCache().put('session:' + sha256_(session),
-    JSON.stringify({ sub: claims.sub, email: claims.email, email_verified: claims.email_verified, role: role, expiresAt: expiresAt }),
-    Math.max(1, Math.floor((expiresAt - Date.now()) / 1000)));
+  // Google validates this login. The app session has its own fixed lifetime.
+  var issuedAt = Date.now();
+  var expiresAt = issuedAt + HOUSEHOLD_SESSION_SECONDS_ * 1000;
+  locked_(function () {
+    var properties = PropertiesService.getScriptProperties();
+    var values = properties.getProperties();
+    var active = 0;
+    Object.keys(values).filter(function (key) { return key.indexOf(HOUSEHOLD_SESSION_PREFIX_) === 0; }).forEach(function (key) {
+      var record;
+      try { record = JSON.parse(values[key]); } catch (error) {}
+      if (!record || !Number.isSafeInteger(record.expiresAt) || record.expiresAt <= issuedAt) properties.deleteProperty(key);
+      else active++;
+    });
+    // Never evict a family's still-valid session to make room for a new login.
+    if (active >= HOUSEHOLD_MAX_SESSIONS_) fail_('SESSION_LIMIT', 'ログイン数の上限です。他の端末でログアウトしてから再試行してください。');
+    properties.setProperty(HOUSEHOLD_SESSION_PREFIX_ + sha256_(session), JSON.stringify({
+      sub: claims.sub, email: claims.email, email_verified: claims.email_verified,
+      role: role, issuedAt: issuedAt, expiresAt: expiresAt, clientId: config.clientId, origin: config.origin
+    }));
+  });
   return { session: session, expiresAt: expiresAt, role: role };
 }
 
 function authLogout(session) {
   token_(session);
-  CacheService.getScriptCache().remove('session:' + sha256_(session));
+  locked_(function () {
+    var hash = sha256_(session);
+    PropertiesService.getScriptProperties().deleteProperty(HOUSEHOLD_SESSION_PREFIX_ + hash);
+    CacheService.getScriptCache().remove('session:' + hash);
+  });
   return { loggedOut: true };
 }
 
@@ -82,7 +102,7 @@ function rpc(request) {
   object_(request);
   // This check precedes every Sheets/Drive call, including malformed operations.
   var identity = authenticate_(request.session);
-  var allowed = ['sessionInfo', 'load', 'mutate', 'uploadReceipt', 'receiptImage'];
+  var allowed = ['sessionInfo', 'bootstrap', 'load', 'mutate', 'uploadReceipt', 'receiptImage'];
   if (allowed.indexOf(request.operation) < 0) fail_('UNKNOWN_OPERATION', 'この操作には対応していません。');
   // Restore authorization before touching any financial data. Never extend the expiry.
   if (request.operation === 'sessionInfo') return { role: identity.role, expiresAt: identity.expiresAt };
@@ -93,11 +113,11 @@ function rpc(request) {
     var identity = authenticate_(request.session);
     if (identity.role !== 'editor' && ['mutate', 'uploadReceipt'].indexOf(request.operation) >= 0) fail_('FORBIDDEN', '閲覧アカウントでは変更できません。');
     var store = loadStore_();
-    if (request.operation === 'load') {
+    if (request.operation === 'load' || request.operation === 'bootstrap') {
       if (identity.role === 'editor') syncBankFixedExpenses_(store);
       // The financial/inbox transaction must finish before any Drive mutation.
       var state = identity.role === 'editor' ? archiveImportedReceipts_(store, consumeInbox_(store)) : store.state;
-      return clientState_(state);
+      return request.operation === 'bootstrap' ? { role: identity.role, expiresAt: identity.expiresAt, state: clientState_(state) } : clientState_(state);
     }
     if (request.operation === 'mutate') {
       object_(request.payload);
@@ -230,15 +250,30 @@ function accountRole_(claims, config) {
 
 function authenticate_(session) {
   session = token_(session);
-  var raw = CacheService.getScriptCache().get('session:' + sha256_(session));
+  var hash = sha256_(session);
+  // Durable records are authoritative; cache eviction cannot sign a user out.
+  // Only pre-upgrade sessions use the old cache, and keep their original expiry.
+  var raw = PropertiesService.getScriptProperties().getProperty(HOUSEHOLD_SESSION_PREFIX_ + hash);
+  var durable = !!raw;
+  if (!raw) raw = CacheService.getScriptCache().get('session:' + hash);
   if (!raw) fail_('AUTH_REQUIRED', 'Googleログインが必要です。');
   var record = parseJson_(raw, 'AUTH_REQUIRED');
   if (!Number.isSafeInteger(record.expiresAt) || record.expiresAt <= Date.now()) {
     fail_('AUTH_REQUIRED', 'Googleログインが必要です。');
   }
   var role;
-  try { role = accountRole_(record, authConfig_()); }
-  catch (error) { fail_('AUTH_REQUIRED', 'Googleログインが必要です。'); }
+  try {
+    var config = authConfig_();
+    if (durable && (record.clientId !== config.clientId || record.origin !== config.origin ||
+        !Number.isSafeInteger(record.issuedAt) || record.expiresAt !== record.issuedAt + HOUSEHOLD_SESSION_SECONDS_ * 1000)) {
+      fail_('AUTH_REQUIRED', 'Googleログインが必要です。');
+    }
+    role = accountRole_(record, config);
+  }
+  catch (error) {
+    if (/^AUTH_(REQUIRED|FORBIDDEN):/.test(String(error.message))) fail_('AUTH_REQUIRED', 'Googleログインが必要です。');
+    throw error;
+  }
   // Promotion needs a new login; demotion/revocation applies immediately.
   record.role = role === 'editor' && record.role === 'editor' ? 'editor' : 'viewer';
   return record;
@@ -265,11 +300,23 @@ function loadStore_() {
   var state = HouseholdDomain.emptyState();
   var sheets = {};
   var rows = {};
-  Object.keys(HOUSEHOLD_TABLES_).concat(['meta']).forEach(function (key) {
+  var keys = Object.keys(HOUSEHOLD_TABLES_).concat(['meta']);
+  keys.forEach(function (key) {
     var name = key === 'meta' ? HOUSEHOLD_META_ : HOUSEHOLD_TABLES_[key];
     var sheet = book.getSheetByName(name);
     if (!sheet) fail_('NOT_INITIALIZED', '管理者による家計簿テーブルの初期化が必要です。');
-    var values = sheet.getDataRange().getValues();
+    sheets[key] = sheet;
+  });
+  // Whole-sheet ranges preserve rejection of malformed content beyond column B.
+  var batch = Sheets.Spreadsheets.Values.batchGet(id, {
+    ranges: keys.map(function (key) { return "'" + (key === 'meta' ? HOUSEHOLD_META_ : HOUSEHOLD_TABLES_[key]).replace(/'/g, "''") + "'"; }),
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  if (!batch.valueRanges || batch.valueRanges.length !== keys.length) fail_('STORE_INVALID', '家計簿テーブルの読込結果を確認してください。');
+  keys.forEach(function (key, tableIndex) {
+    // The Values API trims trailing empty cells/rows; interior blanks are empty strings.
+    var values = batch.valueRanges[tableIndex].values || [];
+    values = values.map(function (row) { return row.map(function (cell) { return cell === null || cell === undefined ? '' : cell; }); });
     tableHeader_(values);
     var snapshot = values.map(function (row) { return [row[0] || '', row[1] || '']; });
     var seen = Object.create(null);
@@ -296,7 +343,6 @@ function loadStore_() {
       state.schemaVersion = records[0].schemaVersion;
       state.revision = records[0].revision;
     } else state[key] = records;
-    sheets[key] = sheet;
     rows[key] = snapshot;
   });
   // Shared validation covers monetary, link and operation invariants as well as

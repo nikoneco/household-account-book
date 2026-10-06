@@ -30,7 +30,7 @@ test('offline shell fallback and activation retain other applications caches',as
  h.listeners.fetch({request:{url:'https://example.github.io/household-account-book/index.html',method:'GET'},respondWith(promise){pending=promise}});
  assert.equal(await pending,'offline-shell');
  h.listeners.activate({waitUntil(promise){pending=promise}});await pending;
- assert.deepEqual(h.deleted,['household-shell-old','household-shell-v0.1.0','household-shell-v0.1.1','household-shell-v0.1.2','household-shell-v0.1.3','household-shell-v0.1.4','household-shell-v0.1.5','household-shell-v0.1.6','household-shell-v0.1.7']);
+ assert.deepEqual(h.deleted,['household-shell-old','household-shell-v0.1.0','household-shell-v0.1.1','household-shell-v0.1.2','household-shell-v0.1.3','household-shell-v0.1.4','household-shell-v0.1.5','household-shell-v0.1.6','household-shell-v0.1.7','household-shell-v0.1.8']);
  h.listeners.install({waitUntil(promise){pending=promise}});await pending;
  assert.ok(h.cached.includes('./index.html'));
  assert.ok(h.cached.includes('./web/session.js')); // Public code only, never a session response.

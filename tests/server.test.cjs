@@ -263,7 +263,7 @@ function harness(options = {}) {
   const context = {
     ...(options.now ? { Date: class extends Date { constructor(...args) { super(...(args.length ? args : [clockNow()])); } static now() { return clockNow(); } } } : {}),
     HouseholdDomain: options.domain || domain,
-    PropertiesService: { getScriptProperties: () => ({ getProperty: name => props[name] || null, getProperties: () => ({ ...props }) }) },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: name => props[name] || null, getProperties: () => ({ ...props }), setProperty: (name, value) => {props[name]=value;}, deleteProperty: name => {delete props[name];} }) },
     CacheService: { getScriptCache: () => ({ put(key, value, ttl) { assert.ok(ttl > 0 && ttl <= 3600); cache.set(key, { value, expiry: clockNow() + ttl * 1000 }); }, get(key) { const item = cache.get(key); return item && item.expiry > clockNow() ? item.value : null; }, remove: key => cache.delete(key) }) },
     LockService: { getScriptLock: () => ({ tryLock() { io.lockTaken++; return !options.busy; }, releaseLock() { io.lockReleased++; } }) },
     Utilities: { getUuid: () => crypto.randomUUID(), newBlob: blob, base64Decode: value => Array.from(Buffer.from(value, 'base64')), base64DecodeWebSafe: value => Array.from(Buffer.from(value, 'base64url')), base64Encode: bytes => Buffer.from(bytes).toString('base64'), DigestAlgorithm: { SHA_256: 'sha256' }, computeDigest: (algorithm, bytes) => Array.from(crypto.createHash(algorithm).update(Buffer.from(bytes)).digest()) },
@@ -296,6 +296,12 @@ function harness(options = {}) {
     Sheets: { Spreadsheets: { Values: { batchGet(id, options) {
       io.sheet++; assert.equal(id, 'private-sheet'); io.batchReads.push(clone(options));
       const result = { valueRanges: options.ranges.map(range => {
+        if (/^'[^']+'$/.test(range)) {
+          const table=sheets.get(range.slice(1,-1));
+          const values=clone(table.rows).map(row=>{while(row.length&&row.at(-1)==='')row.pop();return row;});
+          while(values.length&&!values.at(-1).length)values.pop();
+          return {range,values};
+        }
         const match = range.match(/^([^!]+)!([A-Z])(\d+):([A-Z])(\d*)$/);
         assert.ok(match, 'recognized test A1 range');
         const sheet = sheets.get(match[1]);
@@ -309,7 +315,7 @@ function harness(options = {}) {
         while (values.length && !values.at(-1).length) values.pop();
         return { range, values };
       }) };
-      if (typeof harnessOptionsHook === 'function') harnessOptionsHook(io.batchReads.length, sheets);
+      if (typeof harnessOptionsHook === 'function' && options.ranges[0].includes('!')) harnessOptionsHook(io.batchReads.filter(read=>read.ranges[0].includes('!')).length, sheets);
       return result;
     } }, batchUpdate(body, id) {
       io.sheet++; assert.equal(id, 'private-sheet'); io.batches.push(clone(body));
@@ -363,7 +369,7 @@ function harness(options = {}) {
 
 test('anonymous read, write, upload and image cannot touch Sheets or Drive', () => {
   const h = harness();
-  for (const operation of ['sessionInfo', 'load', 'mutate', 'uploadReceipt', 'receiptImage']) {
+  for (const operation of ['sessionInfo', 'bootstrap', 'load', 'mutate', 'uploadReceipt', 'receiptImage']) {
     for (const session of [undefined, 'x', 'a'.repeat(64)]) assert.throws(() => h.call('rpc', { session, operation, payload: {} }), /AUTH_REQUIRED/);
   }
   assert.equal(h.io.sheet, 0); assert.equal(h.io.drive, 0);
@@ -434,8 +440,8 @@ test('viewer reads but cannot mutate or upload, role changes and logout revoke i
 
 test('session expiry and allowlist changes are checked before every data access', () => {
   const h = harness(); const auth = h.login();
-  const key = 'session:' + hash(auth.session);
-  const record = JSON.parse(h.cache.get(key).value); record.expiresAt = 1; h.cache.get(key).value = JSON.stringify(record);
+  const key = 'HOUSEHOLD_SESSION_V2_' + hash(auth.session);
+  const record = JSON.parse(h.props[key]); record.expiresAt = 1; h.props[key] = JSON.stringify(record);
   assert.throws(() => h.call('rpc', { session: auth.session, operation: 'load' }), /AUTH_REQUIRED/);
   const second = h.login(); h.props.HOUSEHOLD_ALLOWED_EMAIL = 'replacement@example.test';
   assert.throws(() => h.call('rpc', { session: second.session, operation: 'load' }), /AUTH_REQUIRED/);
@@ -444,11 +450,11 @@ test('session expiry and allowlist changes are checked before every data access'
 
 test('session restore validates role and expiry without ledger IO or extending lifetime', () => {
   const h = harness(); const auth = h.login();
-  const key = 'session:' + hash(auth.session), before = h.cache.get(key).value;
+  const key = 'HOUSEHOLD_SESSION_V2_' + hash(auth.session), before = h.props[key];
   const info = h.call('rpc', { session: auth.session, operation: 'sessionInfo' });
   assert.deepEqual(clone(info), { role: 'editor', expiresAt: auth.expiresAt });
-  assert.equal(h.cache.get(key).value, before);
-  assert.ok(auth.expiresAt <= Date.now() + 3600000);
+  assert.equal(h.props[key], before);
+  assert.ok(auth.expiresAt <= Date.now() + 30 * 86400000);
   assert.equal(h.io.sheet + h.io.drive, 0);
   h.props.HOUSEHOLD_ALLOWED_EMAIL = 'replacement@example.test';
   h.props.HOUSEHOLD_VIEWER_EMAILS = 'wife@example.test';
@@ -457,12 +463,110 @@ test('session restore validates role and expiry without ledger IO or extending l
   assert.throws(() => h.call('rpc', { session: auth.session, operation: 'sessionInfo' }), /AUTH_REQUIRED/);
   assert.equal(h.io.sheet + h.io.drive, 0);
   const fresh = harness(); const saved = fresh.login();
-  const record = JSON.parse(fresh.cache.get('session:' + hash(saved.session)).value);
-  record.expiresAt = 1; fresh.cache.get('session:' + hash(saved.session)).value = JSON.stringify(record);
+  const record = JSON.parse(fresh.props['HOUSEHOLD_SESSION_V2_' + hash(saved.session)]);
+  record.expiresAt = 1; fresh.props['HOUSEHOLD_SESSION_V2_' + hash(saved.session)] = JSON.stringify(record);
   assert.throws(() => fresh.call('rpc', { session: saved.session, operation: 'sessionInfo' }), /AUTH_REQUIRED/);
   const revoked = fresh.login(); fresh.call('authLogout', revoked.session);
   assert.throws(() => fresh.call('rpc', { session: revoked.session, operation: 'sessionInfo' }), /AUTH_REQUIRED/);
   assert.equal(fresh.io.sheet + fresh.io.drive, 0);
+});
+
+test('30-day durable session survives cache eviction and Google expiry, expires exactly and never extends', () => {
+  const start=Date.parse('2026-10-06T00:00:00Z'),h=harness({now:new Date(start).toISOString()});
+  const auth=h.login({exp:Math.floor(start/1000)+60});
+  assert.equal(auth.expiresAt,start+30*86400000);
+  const key='HOUSEHOLD_SESSION_V2_'+hash(auth.session),record=h.props[key];
+  assert.ok(record);assert.equal(record.includes(auth.session),false);assert.equal(record.includes('NEVER-RETURN'),false);
+  assert.deepEqual(Object.keys(JSON.parse(record)).sort(),['clientId','email','email_verified','expiresAt','issuedAt','origin','role','sub']);
+  h.cache.clear();h.context.Date.now=()=>start+2*3600000;
+  assert.equal(h.call('rpc',{session:auth.session,operation:'sessionInfo'}).expiresAt,auth.expiresAt);
+  h.context.Date.now=()=>auth.expiresAt-1;
+  assert.equal(h.call('rpc',{session:auth.session,operation:'sessionInfo'}).role,'editor');
+  assert.equal(h.props[key],record);
+  h.context.Date.now=()=>auth.expiresAt;
+  assert.throws(()=>h.call('rpc',{session:auth.session,operation:'bootstrap'}),/AUTH_REQUIRED/);
+  assert.equal(h.io.sheet+h.io.drive,0);
+});
+
+test('durable sessions bind client/origin and authorization; logout invalidates both stores', () => {
+  for(const setting of ['HOUSEHOLD_OAUTH_CLIENT_ID','HOUSEHOLD_PWA_ORIGIN']){
+    const h=harness(),auth=h.login();h.props[setting]=setting.endsWith('ID')?'different-client':'https://other.test';
+    assert.throws(()=>h.call('rpc',{session:auth.session,operation:'bootstrap'}),/AUTH_REQUIRED/);
+    assert.equal(h.io.sheet+h.io.drive,0);
+  }
+  const h=harness(),auth=h.login();
+  h.cache.set('session:'+hash(auth.session),{value:JSON.stringify({sub:'wife-sub',email:'wife@example.test',email_verified:true,role:'editor',expiresAt:Date.now()+3600000}),expiry:Date.now()+3600000});
+  h.call('authLogout',auth.session);assert.equal(h.cache.has('session:'+hash(auth.session)),false);
+  assert.equal(h.props['HOUSEHOLD_SESSION_V2_'+hash(auth.session)],undefined);
+  assert.throws(()=>h.call('rpc',{session:auth.session,operation:'bootstrap'}),/AUTH_REQUIRED/);
+  assert.equal(h.io.sheet+h.io.drive,0);
+});
+
+test('legacy cached sessions keep original expiry and never become durable', () => {
+  const start=Date.parse('2026-10-06T00:00:00Z'),h=harness({now:new Date(start).toISOString()}),session='c'.repeat(64);
+  const expiresAt=start+3600000,key='session:'+hash(session);
+  const record=JSON.stringify({sub:'wife-sub',email:'wife@example.test',email_verified:true,role:'editor',expiresAt});
+  h.cache.set(key,{value:record,expiry:expiresAt+10000});
+  assert.equal(h.call('rpc',{session,operation:'sessionInfo'}).expiresAt,expiresAt);
+  assert.equal(h.props['HOUSEHOLD_SESSION_V2_'+hash(session)],undefined);assert.equal(h.cache.get(key).value,record);
+  h.context.Date.now=()=>expiresAt;assert.throws(()=>h.call('rpc',{session,operation:'bootstrap'}),/AUTH_REQUIRED/);
+  h.context.Date.now=()=>start;h.call('authLogout',session);assert.equal(h.cache.has(key),false);
+});
+
+test('session cap rejects new login without eviction and expired records are pruned', () => {
+  const h=harness(),sessions=[];
+  for(let i=0;i<100;i++)sessions.push(h.login().session);
+  const keys=Object.keys(h.props).filter(key=>key.startsWith('HOUSEHOLD_SESSION_V2_'));
+  assert.equal(keys.length,100);
+  assert.throws(()=>h.login(),/SESSION_LIMIT/);
+  for(const session of sessions)assert.equal(h.call('rpc',{session,operation:'sessionInfo'}).role,'editor');
+  const expired=keys[0],record=JSON.parse(h.props[expired]);record.expiresAt=1;h.props[expired]=JSON.stringify(record);
+  h.props.HOUSEHOLD_SESSION_V2_broken='malformed';h.props.UNRELATED='retained';
+  const fresh=h.login();assert.equal(h.props[expired],undefined);assert.equal(h.props.HOUSEHOLD_SESSION_V2_broken,undefined);
+  assert.equal(h.props.UNRELATED,'retained');assert.equal(Object.keys(h.props).filter(key=>key.startsWith('HOUSEHOLD_SESSION_V2_')).length,100);
+  assert.equal(h.call('rpc',{session:fresh.session,operation:'sessionInfo'}).role,'editor');
+});
+
+test('bootstrap performs existing load transaction once and reads nine whole tables in one batch', () => {
+  const h=harness({domain:realDomain(),state:bankSnapshotState(),now:'2026-10-06T00:00:00Z'}),auth=h.login();
+  const result=h.call('rpc',{session:auth.session,operation:'bootstrap'});
+  assert.equal(result.role,'editor');assert.equal(result.expiresAt,auth.expiresAt);assert.equal(result.state.expenses.length,1);
+  assert.equal(result.state.operations.length,0);assert.equal(h.io.batches.length,1);
+  const batch=h.io.batchReads[0];assert.equal(batch.valueRenderOption,'UNFORMATTED_VALUE');assert.equal(batch.ranges.length,9);
+  assert.ok(batch.ranges.every(range=>/^'HB_[A-Za-z]+'$/.test(range)));
+  const viewer=harness({props:{HOUSEHOLD_VIEWER_EMAILS:'reader@example.test'},domain:realDomain(),state:bankSnapshotState(),now:'2026-10-06T00:00:00Z'});
+  const read=viewer.login({email:'reader@example.test',sub:'reader'});
+  assert.equal(viewer.call('rpc',{session:read.session,operation:'bootstrap'}).state.expenses.length,0);assert.equal(viewer.io.batches.length,0);
+});
+
+test('bootstrap consumes inbox through the same atomic load path', () => {
+  const f=receiptInbox();f.append('bootstrap-receipt',f.payload);
+  const result=f.h.call('rpc',{session:f.session,operation:'bootstrap'});
+  assert.equal(result.state.expenses.length,2);assert.equal(f.inbox.rows[1][2],'processed');
+  assert.deepEqual(clone(result.state.expenses),f.h.storedState().expenses);
+  const writes=f.h.io.batches.length;
+  f.h.call('rpc',{session:f.session,operation:'bootstrap'});assert.equal(f.h.io.batches.length,writes);
+});
+
+test('batched full-sheet reads reject malformed cells beyond column B and preserve all rows', () => {
+  for(const bad of ['header','row','extra-only']){
+    const h=harness(),auth=h.login(),sheet=h.sheets.get('HB_Expenses');
+    if(bad==='header')sheet.rows[0].push('unexpected');
+    else if(bad==='row')sheet.rows.push(['expense',JSON.stringify({id:'expense'}),'unexpected']);
+    else sheet.rows.push(['','','','','unexpected']);
+    const before=clone(sheet.rows);
+    assert.throws(()=>h.call('rpc',{session:auth.session,operation:'bootstrap'}),/STORE_INVALID/);
+    assert.deepEqual(sheet.rows,before);assert.equal(h.io.batches.length,0);
+  }
+});
+
+test('transient property service errors remain retryable rather than revoking valid sessions', () => {
+  const h=harness(),auth=h.login(),original=h.context.PropertiesService.getScriptProperties;
+  h.context.PropertiesService.getScriptProperties=()=>({...original(),getProperties(){throw Error('transient service unavailable');}});
+  assert.throws(()=>h.call('rpc',{session:auth.session,operation:'bootstrap'}),/transient service/);
+  assert.equal(h.io.sheet+h.io.drive,0);
+  h.context.PropertiesService.getScriptProperties=original;
+  assert.equal(h.call('rpc',{session:auth.session,operation:'sessionInfo'}).role,'editor');
 });
 
 test('private initialization is explicit, only adds owned tables and preserves unrelated content', () => {
@@ -601,7 +705,9 @@ test('delta appends only new rows, grows only full grid and reuses nine-table re
   }
   h.sheets.get('HB_Operations').maxRows = 101;
   const changed = h.call('rpc', { session, operation: 'mutate', payload: { type: 'saveIncome', operationId: 'new-income', payload: { month: '2026-09', amount: 300000 } } });
-  assert.equal(reads, 9, 'delta persistence does not re-read tables');
+  assert.equal(reads, 0, 'ledger reads no longer use sequential getValues');
+  assert.equal(h.io.batchReads.length, 1, 'delta persistence reuses the one batched snapshot');
+  assert.equal(h.io.batchReads[0].ranges.length, 9);
   assert.equal(changed.state.operations.length, 0); assert.equal(h.io.batches.length, 1);
   const requests = h.io.batches[0].requests;
   const appends = requests.filter(request => request.appendDimension);
@@ -927,7 +1033,7 @@ test('inbox skip source replaced between snapshots and viewer never consumes pen
   const reads = f.h.io.batchReads.length, writes = f.h.io.batches.length;
   const viewed = f.h.call('rpc', { session, operation: 'load' });
   assert.equal(viewed.expenses.length, 0); assert.equal(f.inbox.rows[row][2], '');
-  assert.equal(f.h.io.batchReads.length, reads); assert.equal(f.h.io.batches.length, writes);
+  assert.equal(f.h.io.batchReads.length, reads + 1); assert.equal(f.h.io.batches.length, writes);
 });
 
 test('oversized or malformed inbox values fail rows without blocking a later valid extraction', () => {

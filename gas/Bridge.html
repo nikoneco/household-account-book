@@ -25,7 +25,7 @@
       .withFailureHandler(error => {
         // Never relay arbitrary Google/service errors that might contain IDs.
         const message = String(error && error.message || '');
-        const match = message.match(/(?:^|\b)(AUTH_[A-Z_]+|NOT_CONFIGURED|NOT_INITIALIZED|STORE_[A-Z_]+|STORAGE_NOT_PRIVATE|INVALID_[A-Z_]+|IMAGE_NOT_FOUND|SAVE_FAILED|UPLOAD_FAILED|BUSY|FORBIDDEN|UNKNOWN_OPERATION|CONFLICT|REVISION_CONFLICT|NOT_FOUND|INSUFFICIENT_BALANCE|DUPLICATE_OPERATION|OPERATION_CONFLICT):\s*([^\r\n]*)/);
+        const match = message.match(/(?:^|\b)(AUTH_[A-Z_]+|SESSION_LIMIT|NOT_CONFIGURED|NOT_INITIALIZED|STORE_[A-Z_]+|STORAGE_NOT_PRIVATE|INVALID_[A-Z_]+|IMAGE_NOT_FOUND|SAVE_FAILED|UPLOAD_FAILED|BUSY|FORBIDDEN|UNKNOWN_OPERATION|CONFLICT|REVISION_CONFLICT|NOT_FOUND|INSUFFICIENT_BALANCE|DUPLICATE_OPERATION|OPERATION_CONFLICT):\s*([^\r\n]*)/);
         reply(false, match ? { code: match[1], message: match[2] } : { code: 'FAILED', message: '処理を確認できませんでした。再読み込みして確認してください。' });
       });
     try {
