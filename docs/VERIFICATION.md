@@ -344,3 +344,12 @@ base35f86e2の11ファイル候補をSHA256固定し、独立レビューは実�
 151/151 tests、check、build、diff-check、公開13アセット機密検索成功。receipt-upload-uiと削除の実ブラウザfixture（390/1280px、キャンセル/確定、importedボタンなし、4状態色、4.5以上のコントラスト、横溢れなし、pageerror0）成功。Browserスキルは未掲載のため既存Playwrightを使用、通常Chromeの既存ログインでも公開表示を確認。独立Sol HighレビューでSAVE_FAILED再試行のP2を修正・再固定・再レビューPASS。MD/金融移行の別文脈レビューもPASS。指定モデル/推論強度の実ランタイム照会はできず未確認。
 
 GAS v16を退避後、同じendpoint/accessでv17へ更新、公開4ファイル一致。Pages f33e8bf7 built、Actions37781710915 success、公開13ファイルは配信Git blobとバイト一致、SW household-shell-v0.1.14。公開fixtureはtransportだけ架空データへ差替え、app/domain/CSSは配信物を使用。通常Chromeは初回のGAS接続失敗後もログイン情報保持・再試行で復元。更新直後はHTTPキャッシュに旧UIが残ったためキャッシュを無視する通常再読込を行い、実データの取込済み緑/解析待ち青、指定未取込1件・その他取込済み、取込済みに削除ボタンなしをDOM/描画色で確認。認証済み読込後も本番10表が削除直後と完全一致し、復活・重複なし。Sheetsの3変更表は既存100%ズーム・固定幅JSON表示を保持し、書式変更なし。スマホ実機・11月の実日次実行・次回ChatGPT解析は未確認。証跡はリポジトリ外Temp/household-receipt-improvements、接続情報/退避データはignored .localのみ。
+
+
+## 2026-10-08 履歴の編集・削除を詳細へ統一
+
+手入力・固定費だけ履歴行の外側にも操作ボタンを表示する分岐を削除。全支出の編集・削除は既存詳細画面内に統一し、詳細の編集者限定表示を保持。家計データ・GASコードは変更なし。SWをhousehold-shell-v0.1.15へ更新。
+
+check、SW関連2テスト、既存ui-flowの全シナリオ成功。UIフローを詳細からの操作へ更新し、手入力・固定費の一覧にボタンがないこと、詳細からの実編集・削除、レシート明細編集を確認。差分確認とdiff-check成功。
+
+Pages 9b18db3f built・Actions37785550335 success、公開13アセットが配信Git blobとバイト一致。公開アプリのローカルデモで手入力・固定費2件を作成し、390/1280pxで一覧の操作ボタンなし・詳細の編集/削除あり・横溢れなし・pageerror0、実編集/削除を確認。公開app/domain/CSSは差替えず、runtime-configのみ404へ差替え。本番データは操作していない。画面証跡はリポジトリ外Temp/household-history-actions-public。スマホ実機は未確認。小さい表示修正のため分業・独立レビューは省略。
