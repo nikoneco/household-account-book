@@ -19,7 +19,8 @@ let transferPreset = null, imageUrl = null, imageRequest = 0, authEpoch = 0, ses
 let receiptUploads = [];
 let restoreRetry = false;
 const materialized = new Set();
-const list = key => (state?.[key] || []).filter(item => key !== 'expenses' || !item.deleted);
+const list = key => (state?.[key] || []).filter(item => !['expenses','receipts'].includes(key) || !item.deleted);
+const canDeleteReceipt = receipt => sessionRole==='editor' && !receipt.deleted && ['pending','needsReview','failed'].includes(receipt.status) && !receipt.expenseIds.length;
 const withdrawalRemaining = expense => expense.amount - list('transfers').filter(t=>t.kind==='withdrawal'&&t.expenseId===expense.id).reduce((sum,t)=>sum+t.amount,0);
 const savings = () => list('settings').filter(item => item.kind === 'saving');
 const fixedPlansForMonth = value => list('plans').filter(plan=>plan.month===value&&plan.kind==='fixed'&&(!plan.bankAutoHandled||plan.id===editing?.planId));
@@ -150,7 +151,7 @@ function updateReceiptUploads() {
   }
 }
 function renderReceipts() {
-  return list('receipts').length?list('receipts').slice().reverse().map(r=>`<article class="receipt-row"><div class="row-head"><h3>${esc(r.fileName||'レシート')}</h3><span class="pill ${r.status==='needsReview'?'review':''}">${{pending:'解析待ち',needsReview:'確認待ち',imported:'取込済み',failed:'保存失敗'}[r.status]||esc(r.status)}</span></div><p class="muted">購入日：${esc(r.purchaseDate||'未確認')}<br>保存日時：${esc(savedTime(r.uploadedAt))}</p>${r.reason?`<p class="muted">${esc(r.reason)}</p>`:''}${r.archiveStatus==='archived'?'<p class="hint">処理済フォルダへ移動済み</p>':r.archiveStatus==='failed'?`<p class="notice">${esc(r.archiveError||'画像を移動できませんでした。')}<br>次に家計簿を開くと、画像の移動だけ再試行します。</p>`:''}${button('receipt-image','画像を見る',r.id)}${r.status==='needsReview' ? button('receipt-pending','再解析待ちにする',r.id) : ''}</article>`).join(''):'<div class="empty">保存したレシートは、ここに並びます。</div>';
+  return list('receipts').length?list('receipts').slice().reverse().map(r=>`<article class="receipt-row"><div class="row-head"><h3>${esc(r.fileName||'レシート')}</h3><span class="pill ${r.status==='needsReview'?'review':''}">${{pending:'解析待ち',needsReview:'確認待ち',imported:'取込済み',failed:'保存失敗'}[r.status]||esc(r.status)}</span></div><p class="muted">購入日：${esc(r.purchaseDate||'未確認')}<br>保存日時：${esc(savedTime(r.uploadedAt))}</p>${r.reason?`<p class="muted">${esc(r.reason)}</p>`:''}${r.archiveStatus==='archived'?'<p class="hint">処理済フォルダへ移動済み</p>':r.archiveStatus==='failed'?`<p class="notice">${esc(r.archiveError||'画像を移動できませんでした。')}<br>次に家計簿を開くと、画像の移動だけ再試行します。</p>`:''}${button('receipt-image','画像を見る',r.id)}${r.status==='needsReview' && sessionRole==='editor' ? button('receipt-pending','再解析待ちにする',r.id) : ''}${canDeleteReceipt(r)?button('delete-receipt','削除する',r.id,'quiet small negative'):''}</article>`).join(''):'<div class="empty">保存したレシートは、ここに並びます。</div>';
 }
 function renderRegister() {
   return heading('登録','支出、積立の移動、レシートの記録')+`<div class="tabs" role="tablist" aria-label="登録の種類">${[['expense','支出'],['transfer','積立'],['receipt','レシート']].map(([key,label])=>`<button type="button" role="tab" aria-selected="${tab===key}" data-tab="${key}">${label}</button>`).join('')}</div>`+(tab==='expense'?expenseForm():tab==='transfer'?transferForm():receiptForm());
@@ -241,7 +242,7 @@ function render() {
 }
 function setBusy(value) {
   busy=value;
-  document.querySelectorAll('form button[type="submit"], [data-action="delete-expense"], [data-action="delete-transfer"], [data-action="toggle-setting"]').forEach(el=>el.disabled=value || !!pendingCommand);
+  document.querySelectorAll('form button[type="submit"], [data-action="delete-expense"], [data-action="delete-transfer"], [data-action="delete-receipt"], [data-action="receipt-pending"], [data-action="toggle-setting"]').forEach(el=>el.disabled=value || !!pendingCommand);
   const plannedDeposits=document.querySelectorAll('[data-action="planned-deposit"]');
   const savingSummary=plannedDeposits.length?summary().savings:[];
   const currentMonth=plannedDeposits.length?today().slice(0,7):'';
@@ -271,9 +272,9 @@ async function mutate(type,payload,onSuccess=()=>render(),exact=null) {
     if(epoch!==authEpoch)return;
     if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code)){await logout();message('ログインの有効期限が切れました。Googleでログインし直してください。',true);return;}
     if(error.code==='CONFLICT'){
-      try{const latest=await transport.load();if(epoch!==authEpoch)return;state=latest;pendingCommand=null;pendingSuccess=null;document.querySelector('#pending').hidden=true;if(page==='home'&&command.type==='saveTransfer')render();message('最新情報を読み込みました。入力内容を確認して、もう一度保存してください。',true);return;}catch{}
+      try{const latest=await transport.load();if(epoch!==authEpoch)return;state=latest;pendingCommand=null;pendingSuccess=null;document.querySelector('#pending').hidden=true;if((page==='home'&&command.type==='saveTransfer')||command.type==='deleteReceipt')render();message('最新情報を読み込みました。入力内容を確認して、もう一度保存してください。',true);return;}catch{}
     }
-    const retryable = ['TIMEOUT','NETWORK','NETWORK_ERROR','TRANSPORT_ERROR','CONNECTION_ERROR'].includes(error.code) || /timeout|timed out|通信|接続|ネットワーク|fetch/i.test(error.message);
+    const retryable = ['SAVE_FAILED','TIMEOUT','NETWORK','NETWORK_ERROR','TRANSPORT_ERROR','CONNECTION_ERROR'].includes(error.code) || /timeout|timed out|通信|接続|ネットワーク|fetch/i.test(error.message);
     if (retryable) { pendingCommand=command;document.querySelector('#pending').hidden=false; }
     message(error.message||'保存できませんでした。入力を確認してください。',true);
   } finally { if(epoch===authEpoch)setBusy(false); }
@@ -408,6 +409,11 @@ document.addEventListener('click',async event=>{
   if(action==='receipt-image')await showImage(id,btn);
   if(action==='close-image'){closeImage();btn.closest('.image-panel').remove();}
   if(action==='receipt-pending')await mutate('setReceiptStatus',{id,status:'pending',reason:''});
+  if(action==='delete-receipt'){
+    const receipt=list('receipts').find(item=>item.id===id);
+    if(!receipt || !canDeleteReceipt(receipt))return;
+    if(confirm('この未取込レシートを削除しますか？削除すると解析・取込の対象から外れ、元に戻せません。'))await mutate('deleteReceipt',{id},()=>{closeImage();render();return 'レシートを削除しました。';});
+  }
 });
 
 async function uploadReceipts(retry=false) {
@@ -456,6 +462,7 @@ async function uploadReceipts(retry=false) {
   }finally{if(epoch===authEpoch)setBusy(false);}
 }
 async function showImage(id,trigger) {
+  if(!list('receipts').some(receipt=>receipt.id===id))return;
   clearMessages();const epoch=authEpoch;
   const target=document.querySelector('#expense-detail')||document.querySelector('#saved-receipts-content')||main;const request=++imageRequest;
   const label=trigger?.textContent;
