@@ -488,7 +488,10 @@ function consumeInbox_(store) {
         reason = '対象レシートが見つかりません。アプリのレシートIDを確認してください。';
         throw new Error('INBOX_RECEIPT');
       }
-      if (previous) {
+      if (receipt.deleted) {
+        status = 'skipped';
+        reason = '削除済みのレシートのため取り込みません。';
+      } else if (previous) {
         // An inbox row is a history of this extraction, not the receipt's
         // current state. A reset C cell must not replay an old review result or
         // mark it processed after the receipt was reset or a correction imported.
@@ -552,7 +555,7 @@ function archiveImportedReceipts_(store, state) {
     }
   });
   var candidates = state.receipts.filter(function (receipt) {
-    return imported[receipt.id] && receipt.status === 'imported' && receipt.expenseIds.length && receipt.archiveStatus !== 'archived';
+    return !receipt.deleted && imported[receipt.id] && receipt.status === 'imported' && receipt.expenseIds.length && receipt.archiveStatus !== 'archived';
   });
   // New imports are not held behind a backlog of repeatedly failing moves.
   var attempt = function (receipt) { return Number.isSafeInteger(receipt.archiveAttempt) && receipt.archiveAttempt >= 0 && receipt.archiveAttempt <= state.revision ? receipt.archiveAttempt : 0; };
@@ -650,6 +653,7 @@ function uploadReceipt_(store, input) {
     fail_('CONFLICT', 'この操作番号は別の保存に使用されています。');
   }
   var receipt = store.state.receipts.find(function (item) { return item.imageHash === validated.hash; });
+  if (receipt && receipt.deleted) fail_('CONFLICT', 'この画像のレシートは削除済みです。');
   var folder = receiptFolder_();
   var file;
   if (receipt) {
@@ -776,7 +780,7 @@ function receiptImage_(state, input) {
   object_(input);
   var id = boundedString_(input.receiptId, 200, 'INVALID_INPUT');
   var receipt = state.receipts.find(function (item) { return item.id === id; });
-  if (!receipt) fail_('IMAGE_NOT_FOUND', '画像が見つかりません。');
+  if (!receipt || receipt.deleted) fail_('IMAGE_NOT_FOUND', '画像が見つかりません。');
   var file = receiptFile_(receipt, receiptFolder_());
   var bytes = file.getBlob().getBytes();
   if (bytes.length > HOUSEHOLD_MAX_IMAGE_ || sha256Bytes_(bytes) !== receipt.imageHash || sniffImage_(bytes) !== receipt.mimeType || file.getMimeType() !== receipt.mimeType) {

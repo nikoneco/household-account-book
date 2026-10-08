@@ -209,6 +209,8 @@ var HouseholdDomain = (function () {
       if (row.purchaseDate != null) date(row.purchaseDate);
       if (own(row, 'merchant')) text(row.merchant, '店名', true, 120);
       if (!Array.isArray(row.expenseIds)) fail('INVALID_INPUT', 'レシート明細リンクを確認してください。');
+      if (own(row, 'deleted')) bool(row.deleted, 'レシートの削除状態');
+      if (row.deleted && (row.status === 'imported' || row.expenseIds.length)) fail('INVALID_INPUT', '取込済みのレシートは削除できません。');
       unique(row.expenseIds.map(function (id) { return { id: id }; }), function (entry) { return entry.id; }, 'レシート明細リンク');
       row.expenseIds.forEach(function (id) {
         var expense = lookup('expenses', id, 'レシート明細');
@@ -440,6 +442,7 @@ var HouseholdDomain = (function () {
     if (old && old.receiptId && (receiptId !== old.receiptId || lineId !== old.receiptLineId)) fail('CONFLICT', 'レシートから取り込んだ明細の関連は変更できません。');
     if (receiptId || lineId) {
       var receipt = byId(state.receipts, receiptId, 'レシート');
+      if (receipt.deleted) fail('CONFLICT', '削除済みのレシートには明細を登録できません。');
       identifier(lineId, 'レシート行ID');
       row.receiptId = receiptId; row.receiptLineId = lineId; row.manualEdited = true;
       if (receipt.expenseIds.indexOf(row.id) < 0) receipt.expenseIds.push(row.id);
@@ -492,6 +495,7 @@ var HouseholdDomain = (function () {
     var existingId = p.id ? state.receipts.find(function (row) { return row.id === p.id; }) : undefined;
     if (existingId && existingId.imageHash !== hash) fail('CONFLICT', '同じIDで別の画像は登録できません。');
     var existingHash = state.receipts.find(function (row) { return row.imageHash === hash; });
+    if (existingHash && existingHash.deleted) fail('CONFLICT', 'この画像のレシートは削除済みです。');
     if (existingHash) return existingHash;
     var receipt = {
       id: newId(state.receipts, p, context), imageHash: hash,
@@ -504,6 +508,7 @@ var HouseholdDomain = (function () {
   }
   function setReceiptStatus(state, p) {
     var receipt = byId(state.receipts, p.receiptId || p.id, 'レシート');
+    if (receipt.deleted) fail('CONFLICT', '削除済みのレシートは変更できません。');
     var status = oneOf(p.status, ['pending', 'needsReview', 'imported', 'failed'], 'レシート状態');
     if (status === 'pending' && (receipt.expenseIds.length || receipt.status === 'imported')) {
       fail('CONFLICT', '取込済みのレシートは再解析待ちに戻せません。明細を編集してください。');
@@ -514,6 +519,7 @@ var HouseholdDomain = (function () {
   }
   function importReceipt(state, p) {
     var receipt = byId(state.receipts, p.receiptId, 'レシート');
+    if (receipt.deleted) fail('CONFLICT', '削除済みのレシートは取り込めません。');
     // Keep links (including tombstones) forever. Reanalysis cannot overwrite a manual
     // correction or resurrect a deleted line, even under a new operation ID.
     if (receipt.expenseIds.length) {
@@ -564,13 +570,30 @@ var HouseholdDomain = (function () {
     return { receipt: receipt, expenses: expenses, imported: true, alreadyImported: false, needsReview: false };
   }
 
+  function deleteReceipt(state, p) {
+    var receipt = byId(state.receipts, p.receiptId || p.id, 'レシート');
+    if (receipt.status === 'imported' || receipt.expenseIds.length) fail('CONFLICT', '取込済みのレシートは削除できません。明細を編集してください。');
+    // Preserve both the image hash and original status forever for deduplication
+    // and late extraction results. Drive images and financial records stay intact.
+    receipt.deleted = true;
+    return receipt;
+  }
+
   function execute(input, command, options) {
     object(command, '操作');
     var operationId = identifier(command.operationId, '操作ID');
     object(input, '家計簿');
     if (!Array.isArray(input.operations)) fail('INVALID_INPUT', '操作履歴を確認してください。');
     var previous = input.operations.find(function (operation) { return operation.operationId === operationId; });
-    if (previous) return { state: copy(input), result: copy(previous.result) };
+    if (previous) {
+      // A replayed old upload/review must not present its pre-deletion snapshot
+      // as a saved active receipt. Delete retries themselves remain idempotent.
+      if (['registerReceipt', 'setReceiptStatus', 'importReceipt'].indexOf(previous.type) >= 0) {
+        var savedReceipt = previous.type === 'importReceipt' ? previous.result && previous.result.receipt : previous.result;
+        if (savedReceipt && input.receipts.some(function (row) { return row.id === savedReceipt.id && row.deleted; })) fail('CONFLICT', 'このレシートは削除済みです。');
+      }
+      return { state: copy(input), result: copy(previous.result) };
+    }
     var state = copy(input);
     var context = Object.assign({}, options || {});
     if (context.uuid != null && typeof context.uuid !== 'function') fail('INVALID_INPUT', 'ID生成機能を確認してください。');
@@ -597,6 +620,7 @@ var HouseholdDomain = (function () {
       case 'registerReceipt': result = registerReceipt(state, p, context); break;
       case 'importReceipt': result = importReceipt(state, p); break;
       case 'setReceiptStatus': result = setReceiptStatus(state, p); break;
+      case 'deleteReceipt': result = deleteReceipt(state, p); break;
       default: fail('INVALID_INPUT', '未対応の操作です。');
     }
     validateState(state, today);

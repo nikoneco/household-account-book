@@ -554,6 +554,37 @@ test('receipt image hash and stable ID deduplicate uploads without replacing sav
   b.attempt('setReceiptStatus', { receiptId: 'receipt', status: 'unknown' });
 });
 
+test('unimported receipt deletion keeps a permanent dedup tombstone and blocks every revival path', () => {
+  for (const status of ['pending', 'needsReview', 'failed']) {
+    const b = book();
+    receipt(b);
+    if (status !== 'pending') b.run('setReceiptStatus', { id: 'receipt', status, reason: '確認' });
+    const before = plain(b.state.receipts[0]);
+    const deleted = b.run('deleteReceipt', { id: 'receipt' }, { operationId: 'delete-stable' });
+    assert.deepEqual(plain(deleted), { ...before, deleted: true });
+    const revision = b.state.revision;
+    b.run('deleteReceipt', { id: 'receipt' }, { operationId: 'delete-stable', expectedRevision: 0 });
+    assert.equal(b.state.revision, revision, 'Ambiguous response retries do not save twice');
+    b.attempt('importReceipt', mixed(), 'CONFLICT');
+    b.attempt('setReceiptStatus', { id: 'receipt', status: 'pending' }, 'CONFLICT');
+    b.attempt('registerReceipt', { id: 'new', imageHash: 'hash-123' }, 'CONFLICT');
+    b.attempt('registerReceipt', {}, 'CONFLICT', { operationId: 'operation-1' });
+    b.attempt('upsertExpense', { id: 'linked', useDate: '2026-10-01', paymentMethod: 'cash', amount: 10, category: '食費', receiptId: 'receipt', receiptLineId: 'manual' }, 'CONFLICT');
+    assert.equal(b.state.receipts.length, 1);
+    assert.equal(b.state.expenses.length, 0);
+  }
+});
+
+test('receipt deletion refuses imported receipts, including changed status and deleted expense links', () => {
+  const b = book(); receipt(b); b.run('importReceipt', mixed());
+  b.attempt('deleteReceipt', { id: 'receipt' }, 'CONFLICT');
+  b.run('setReceiptStatus', { id: 'receipt', status: 'needsReview', reason: '再確認' });
+  for (const id of b.state.receipts[0].expenseIds) b.run('deleteExpense', { id });
+  b.attempt('deleteReceipt', { id: 'receipt' }, 'CONFLICT');
+  const invalidState = plain(b.state); invalidState.receipts[0].deleted = true;
+  invalid(() => D.execute(invalidState, { type: 'deleteReceipt', operationId: 'new', payload: { id: 'receipt' } }, b.options));
+});
+
 test('mixed receipt import is atomic, preserves category and assigns billing month once', () => {
   const b = book();
   receipt(b);

@@ -127,3 +127,7 @@ input[type=date]::-webkit-datetime-edit,input[type=month]::-webkit-datetime-edit
 .saving-item-body>.hint{padding:8px 6px;margin-bottom:0}
 @media(hover:hover){.outflow-category>.outflow-category-summary:hover,.outflow-category-summary.is-hover{background:var(--accordion-heading-surface)}.saving-item>.saving-item-summary:hover{background:var(--accordion-heading-surface)}}
 @media(max-width:350px){.outflow-category>.outflow-category-summary{padding-left:6px;padding-right:6px}.category.outflow-category-summary{grid-template-columns:56px minmax(10px,1fr) auto 8px;gap:6px}}
+/* Receipt states retain text labels as well as distinct colors. */
+.pill.receipt-imported{background:#e0eee4;color:#24513a}
+.pill.receipt-pending{background:#e4eff7;color:#24536f}
+.pill.receipt-failed{background:var(--error-surface);color:var(--error)}

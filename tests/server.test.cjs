@@ -860,6 +860,58 @@ test('deleting a real transfer clears the owned table tail without touching othe
   assert.deepEqual(h.sheets.get('シート1').rows, [['unrelated', '=SUM(1,2)']]);
 });
 
+test('receipt deletion is locked and atomic, retries lost responses, and preserves images and other records', () => {
+  for (const fault of ['before', 'after']) {
+    const f = receiptInbox(); const before = f.h.storedState(), drive = f.h.io.drive;
+    const command = { type: 'deleteReceipt', operationId: 'delete-stable', expectedRevision: before.revision, payload: { id: f.receipt.id } };
+    f.h.setBatchFault(fault);
+    assert.throws(() => f.h.call('rpc', { session: f.session, operation: 'mutate', payload: command }), /SAVE_FAILED/);
+    assert.equal(f.h.storedState().receipts[0].deleted, fault === 'after' ? true : undefined);
+    const retried = f.h.call('rpc', { session: f.session, operation: 'mutate', payload: command });
+    assert.equal(retried.result.deleted, true);
+    assert.equal(retried.state.revision, before.revision + 1);
+    assert.equal(f.h.storedState().operations.filter(row => row.operationId === 'delete-stable').length, 1);
+    assert.deepEqual(f.h.storedState().expenses, before.expenses);
+    assert.equal(f.h.files.size, 1); assert.equal([...f.h.files.values()][0].trashed, false);
+    assert.equal(f.h.io.drive, drive, 'Deleting a receipt never touches Drive');
+    assert.equal(f.h.io.lockTaken, f.h.io.lockReleased);
+    for (const operationId of ['upload-one', 'new-upload']) assert.throws(() => f.h.call('rpc', { session: f.session, operation: 'uploadReceipt', payload: upload(operationId) }), /CONFLICT/);
+    assert.throws(() => f.h.call('rpc', { session: f.session, operation: 'receiptImage', payload: { receiptId: f.receipt.id } }), /IMAGE_NOT_FOUND/);
+    assert.equal(f.h.io.drive, drive, 'Cancelled images cannot be reached or reuploaded');
+  }
+});
+
+test('late and replayed inbox rows for deleted receipts are skipped without blocking another receipt', () => {
+  const f = receiptInbox();
+  const old = f.append('old-review', { receiptId: f.receipt.id, reviewReason: '日付を確認' }); f.load();
+  const mutate = (type, payload, operationId) => f.h.call('rpc', { session: f.session, operation: 'mutate', payload: { type, payload, operationId } });
+  mutate('deleteReceipt', { id: f.receipt.id }, 'delete');
+  for (const [type, payload] of [['importReceipt', f.payload], ['setReceiptStatus', { id: f.receipt.id, status: 'pending' }]]) assert.throws(() => mutate(type, payload, 'revive-'+type), /CONFLICT/);
+  f.inbox.rows[old][2] = 'pending';
+  const late = f.append('late', f.payload), review = f.append('late-review', { receiptId: f.receipt.id, reviewReason: '不鮮明' });
+  const bytes = Buffer.concat([jpeg, Buffer.from([2])]);
+  const other = f.h.call('rpc', { session: f.session, operation: 'uploadReceipt', payload: upload('other-upload', bytes) }).result;
+  const good = f.append('valid-other', { ...f.payload, receiptId: other.id });
+  const snapshots = clone(f.inbox.rows.map(row => row.slice(0, 2)));
+  const state = f.load();
+  for (const row of [old, late, review]) { assert.equal(f.inbox.rows[row][2], 'skipped'); assert.match(f.inbox.rows[row][3], /削除済み/); }
+  assert.equal(f.inbox.rows[good][2], 'processed'); assert.equal(state.expenses.length, 2);
+  assert.ok(state.expenses.every(row => row.receiptId === other.id));
+  assert.equal(state.receipts.find(row => row.id === f.receipt.id).deleted, true);
+  assert.deepEqual(f.inbox.rows.map(row => row.slice(0, 2)), snapshots);
+  const batchCount = f.h.io.batches.length; f.load(); assert.equal(f.h.io.batches.length, batchCount);
+});
+
+test('server refuses deletion after import and refuses viewer deletion before any data IO', () => {
+  const f = receiptInbox({ props: { HOUSEHOLD_VIEWER_EMAILS: 'viewer@example.test' } });
+  f.append('import', f.payload); f.load();
+  const command = { type: 'deleteReceipt', operationId: 'delete-imported', payload: { id: f.receipt.id } };
+  assert.throws(() => f.h.call('rpc', { session: f.session, operation: 'mutate', payload: command }), /CONFLICT/);
+  const session = f.h.login({ sub: 'viewer', email: 'viewer@example.test' }).session, reads = f.h.io.sheet;
+  assert.throws(() => f.h.call('rpc', { session, operation: 'mutate', payload: command }), /FORBIDDEN/);
+  assert.equal(f.h.io.sheet, reads); assert.equal(f.h.storedState().receipts[0].deleted, undefined);
+});
+
 test('editor load imports inbox and commits financial rows and C:D statuses together without changing sources', () => {
   const f = receiptInbox();
   const row = f.append('daily-stable-id', f.payload);
