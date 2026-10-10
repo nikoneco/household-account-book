@@ -1183,3 +1183,39 @@ test('legacy fixed outflows subtract partial, full and cross-month savings fundi
   assert.equal(D.summarize(legacy,'2026-11').salaryOutflow,0);
   assert.equal(JSON.stringify(legacy),before);
 });
+
+
+test('reanalysis saves server-owned request and immutable notes; a lost-response replay cannot duplicate history', () => {
+  const b=book();b.run('registerReceipt',{id:'r',imageHash:'hash'});
+  b.run('setReceiptStatus',{id:'r',status:'needsReview',reason:'購入日と支払方法が不明'});
+  const command={type:'requestReceiptReanalysis',operationId:'request-once',expectedRevision:b.state.revision,payload:{receiptId:'r',memo:'購入日は2026-10-04、現金です。',analysisRequestId:'client-spoof',requestedAt:'1999-01-01T00:00:00.000Z'}};
+  const response=D.execute(b.state,command,b.options),r=response.result;
+  assert.equal(r.status,'pending');assert.equal(r.reason,'');assert.notEqual(r.analysisRequestId,'client-spoof');
+  assert.deepEqual(plain(r.analysisNotes),[{analysisRequestId:r.analysisRequestId,requestedAt:NOW,memo:command.payload.memo,reviewReason:'購入日と支払方法が不明'}]);
+  const replay=D.execute(response.state,command,b.options);
+  assert.deepEqual(plain(replay.state),plain(response.state));assert.equal(replay.state.receipts[0].analysisNotes.length,1);
+  const added=D.execute(response.state,{type:'requestReceiptReanalysis',operationId:'additional',payload:{receiptId:'r',memo:'訂正：カード払いです。'}},b.options);
+  assert.notEqual(added.result.analysisRequestId,r.analysisRequestId);assert.equal(added.result.analysisNotes.length,2);
+  assert.deepEqual(plain(added.result.analysisNotes[0]),plain(r.analysisNotes[0]));
+});
+
+test('reanalysis allows an empty initial review request, requires a pending supplement and preserves history at limits', () => {
+  const b=book();b.run('registerReceipt',{id:'r',imageHash:'hash'});
+  b.attempt('requestReceiptReanalysis',{receiptId:'r',memo:'   '});
+  b.run('setReceiptStatus',{id:'r',status:'needsReview',reason:'読めません'});
+  const empty=b.run('requestReceiptReanalysis',{receiptId:'r',memo:''});assert.equal(empty.analysisNotes[0].memo,'');
+  b.attempt('requestReceiptReanalysis',{receiptId:'r',memo:'あ'.repeat(2001)});
+  for(let i=0;i<5;i++)b.run('requestReceiptReanalysis',{receiptId:'r',memo:'あ'.repeat(2000)});
+  b.attempt('requestReceiptReanalysis',{receiptId:'r',memo:'あ'.repeat(2000)});
+  assert.equal(b.state.receipts[0].analysisNotes.length,6);
+  b.attempt('requestReceiptReanalysis',{receiptId:'r',memo:'補足'},'CONFLICT',{expectedRevision:0});
+  b.run('deleteReceipt',{id:'r'});b.attempt('requestReceiptReanalysis',{receiptId:'r',memo:'補足'},'CONFLICT');
+});
+
+test('imported or failed receipts cannot be reanalysis requested; historical unversioned records remain valid', () => {
+  const b=book();b.run('registerReceipt',{id:'r',imageHash:'hash'});
+  b.run('setReceiptStatus',{id:'r',status:'failed',reason:'失敗'});b.attempt('requestReceiptReanalysis',{receiptId:'r',memo:'補足'},'CONFLICT');
+  b.run('setReceiptStatus',{id:'r',status:'pending',reason:''});
+  b.run('importReceipt',{receiptId:'r',useDate:'2026-10-04',paymentMethod:'card',total:100,lines:[{lineId:'one',amount:100,category:'食費',description:'品物'}]});
+  b.attempt('requestReceiptReanalysis',{receiptId:'r',memo:'補足'},'CONFLICT');
+});

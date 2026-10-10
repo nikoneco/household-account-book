@@ -1349,3 +1349,47 @@ test('bridge checks exact top origin and channel, routes narrow methods, hides u
   assert.equal(calls.at(-1)[1].channel, channel);
   success({ session: 'test-session' }); assert.equal(sent.at(-1).message.ok, true);
 });
+
+
+test('reanalysis request and pending supplement commit atomically, preserve retries and reject viewers', () => {
+  for(const fault of ['before','after']) {
+    const f=receiptInbox({props:{HOUSEHOLD_VIEWER_EMAILS:'viewer@example.test'}});
+    f.append('old-review',{receiptId:f.receipt.id,reviewReason:'購入日が不明'});f.load();
+    const command={type:'requestReceiptReanalysis',operationId:'request',expectedRevision:f.h.storedState().revision,payload:{receiptId:f.receipt.id,memo:'購入日は2026-10-04です。',analysisRequestId:'untrusted'}};
+    f.h.setBatchFault(fault);assert.throws(()=>f.h.call('rpc',{session:f.session,operation:'mutate',payload:command}),/SAVE_FAILED/);
+    const response=f.h.call('rpc',{session:f.session,operation:'mutate',payload:command});
+    assert.notEqual(response.result.analysisRequestId,'untrusted');assert.equal(response.result.status,'pending');assert.equal(response.result.analysisNotes.length,1);
+    const stored=f.h.storedState(),notes=stored.receipts[0].analysisNotes;
+    assert.deepEqual(notes[0].reviewReason,'購入日が不明');assert.equal(stored.operations.filter(o=>o.operationId==='request').length,1);
+    const batch=f.h.io.batches.at(-1).requests.filter(r=>r.updateCells).map(r=>r.updateCells.range.sheetId);
+    assert.ok(batch.includes(f.h.sheets.get('HB_Receipts').sid));assert.ok(batch.includes(f.h.sheets.get('HB_Operations').sid));
+    const viewer=f.h.login({sub:'viewer-sub',email:'viewer@example.test'}).session;
+    assert.throws(()=>f.h.call('rpc',{session:viewer,operation:'mutate',payload:{...command,operationId:'viewer-request'}}),/FORBIDDEN/);
+    assert.throws(()=>f.h.call('rpc',{session:f.session,operation:'mutate',payload:{...command,operationId:'stale-request',payload:{receiptId:f.receipt.id,memo:'追記'}}}),/CONFLICT/);
+    assert.deepEqual(f.h.storedState(),stored);
+  }
+});
+
+test('latest request wins against old, replayed and missing-number inbox results without changing source cells', () => {
+  const f=receiptInbox();
+  const oldReview=f.append('old-review',{receiptId:f.receipt.id,reviewReason:'日付が不明'});f.load();
+  const request=(operationId,memo)=>f.h.call('rpc',{session:f.session,operation:'mutate',payload:{type:'requestReceiptReanalysis',operationId,payload:{receiptId:f.receipt.id,memo}}}).result;
+  const first=request('request-one','購入日は2026-10-04です。');
+  const old=f.append('request-one-result',{...f.payload,analysisRequestId:first.analysisRequestId,useDate:'2026-10-04',paymentMethod:'card'});
+  const second=request('request-two','訂正：現金払いです。');
+  f.inbox.rows[oldReview][2]='pending';
+  const missing=f.append('missing-number',f.payload);
+  const oldReason=f.append('old-request-review',{receiptId:f.receipt.id,analysisRequestId:first.analysisRequestId,reviewReason:'読めない'});
+  const before=f.h.storedState();const sources=clone(f.inbox.rows.map(r=>r.slice(0,2)));
+  const loaded=f.load();assert.equal(loaded.receipts[0].status,'pending');assert.deepEqual(f.h.storedState(),before);
+  for(const row of [oldReview,old,missing,oldReason]){assert.equal(f.inbox.rows[row][2],'skipped');assert.ok(f.inbox.rows[row][3]);}
+  assert.deepEqual(f.inbox.rows.map(r=>r.slice(0,2)),sources);
+  const good=f.append('latest-result',{...f.payload,analysisRequestId:second.analysisRequestId,useDate:'2026-10-04',paymentMethod:'cash',memo:'ユーザー補足で購入日と現金払いを確認'});
+  const imported=f.load();assert.equal(f.inbox.rows[good][2],'processed');
+  assert.equal(imported.receipts[0].purchaseDate,'2026-10-04');assert.equal(imported.receipts[0].analysisNotes.length,2);
+  assert.ok(imported.expenses.every(e=>e.useDate==='2026-10-04'&&e.paymentMethod==='cash'&&e.accountingMonth==='2026-10'&&/補足/.test(e.memo)));
+  const expense=imported.expenses[0];
+  f.h.call('rpc',{session:f.session,operation:'mutate',payload:{type:'deleteExpense',operationId:'manual-delete',payload:{id:expense.id}}});
+  f.append('latest-result-again',{...f.payload,analysisRequestId:second.analysisRequestId});
+  const repeated=f.load();assert.equal(repeated.expenses[0].deleted,true);assert.equal(repeated.expenses.length,2);
+});

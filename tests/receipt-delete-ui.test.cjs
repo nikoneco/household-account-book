@@ -91,3 +91,14 @@ for (const commitBeforeFailure of [false, true]) test(`SAVE_FAILED ${commitBefor
   assert.equal(a.storedState().operations[0].operationId, a.commands[0].operationId);
   assert.equal(a.node('#message').textContent, 'レシートを削除しました。');
 });
+
+
+test('saved receipts group imported at the end, keep each group order and omit an empty inner accordion', () => {
+  const row=receipt('done','imported',{expenseIds:['linked']});
+  const mixed=app([receipt('first'),row,receipt('second')]).render();
+  assert.match(mixed,/<details id="imported-receipts" class="imported-receipts"><summary>取込済み（1件）/);
+  assert.ok(mixed.indexOf('second.jpg')<mixed.indexOf('first.jpg'));assert.ok(mixed.indexOf('first.jpg')<mixed.indexOf('done.jpg'));
+  assert.doesNotMatch(app([receipt('one')]).render(),/imported-receipts/);
+  assert.match(app([row]).render(),/取込済み（1件）/);
+  assert.match(app([]).render(),/保存したレシートは、ここに並びます/);
+});

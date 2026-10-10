@@ -20,6 +20,7 @@ let receiptUploads = [];
 let restoreRetry = false;
 const materialized = new Set();
 const list = key => (state?.[key] || []).filter(item => !['expenses','receipts'].includes(key) || !item.deleted);
+const canReanalyseReceipt = receipt => sessionRole==='editor' && !receipt.deleted && ['pending','needsReview'].includes(receipt.status) && !receipt.expenseIds.length;
 const canDeleteReceipt = receipt => sessionRole==='editor' && !receipt.deleted && ['pending','needsReview','failed'].includes(receipt.status) && !receipt.expenseIds.length;
 const withdrawalRemaining = expense => expense.amount - list('transfers').filter(t=>t.kind==='withdrawal'&&t.expenseId===expense.id).reduce((sum,t)=>sum+t.amount,0);
 const savings = () => list('settings').filter(item => item.kind === 'saving');
@@ -30,7 +31,7 @@ const field = (name,label,value,type='text',extra='') => `<label>${label}<input 
 const moneyField = (name,label,value,extra='required') => field(name,label,value,'number',`min="0" step="1" inputmode="numeric" ${extra}`);
 const paymentField = (value='cash') => `<label>支払方法<select name="paymentMethod">${options(Object.keys(PAYMENTS),value,key=>PAYMENTS[key])}</select></label>`;
 const categoryField = (value='食費',fixed=false) => `<label id="expense-category">分類${fixed?'<input name="category" value="固定費" readonly>':`<select name="category">${options(CATEGORIES,value)}</select>`}</label>`;
-function message(text, error = false) { const el = document.querySelector(error ? '#error' : '#message'); el.textContent = text; el.hidden = !text; }
+function message(text, error = false) { const el = document.querySelector(error ? '#error' : '#message'); el.textContent = text; el.hidden = !text; if(error){const notice=document.querySelector('#receipt-reanalysis-error');if(notice){notice.textContent=text;notice.hidden=!text;}} }
 function clearMessages() { message(''); message('',true); }
 function sessionSaveNotice(result) {
   if(result.saved)return;
@@ -44,7 +45,7 @@ function formStart(id) { return `<form id="${id}"><div class="form-grid">`; }
 function formEnd(label='保存する',cancel='') { return `</div><div class="form-actions"><button type="submit">${label}</button>${cancel ? button(cancel,'キャンセル') : ''}</div></form>`; }
 
 function renderAuth() {
-  closeDetail();
+  closeReceiptReanalysis(true);closeDetail();
   document.querySelector('#navigation').hidden = true;
   document.querySelector('#logout').hidden = !loginLoading && !restoreRetry;
   main.setAttribute('aria-busy',String(loginLoading));
@@ -153,8 +154,30 @@ function updateReceiptUploads() {
   }
 }
 function renderReceipts() {
-  return list('receipts').length?list('receipts').slice().reverse().map(r=>`<article class="receipt-row"><div class="row-head"><h3>${esc(r.fileName||'レシート')}</h3><span class="pill receipt-${esc(r.status)} ${r.status==='needsReview'?'review':''}">${{pending:'解析待ち',needsReview:'確認待ち',imported:'取込済み',failed:'保存失敗'}[r.status]||esc(r.status)}</span></div><p class="muted">購入日：${esc(r.purchaseDate||'未確認')}<br>保存日時：${esc(savedTime(r.uploadedAt))}</p>${r.reason?`<p class="muted">${esc(r.reason)}</p>`:''}${r.archiveStatus==='archived'?'<p class="hint">処理済フォルダへ移動済み</p>':r.archiveStatus==='failed'?`<p class="notice">${esc(r.archiveError||'画像を移動できませんでした。')}<br>次に家計簿を開くと、画像の移動だけ再試行します。</p>`:''}${button('receipt-image','画像を見る',r.id)}${r.status==='needsReview' && sessionRole==='editor' ? button('receipt-pending','再解析待ちにする',r.id) : ''}${canDeleteReceipt(r)?button('delete-receipt','削除する',r.id,'quiet small negative'):''}</article>`).join(''):'<div class="empty">保存したレシートは、ここに並びます。</div>';
+  const receipts=list('receipts').slice().reverse();
+  if(!receipts.length)return '<div class="empty">保存したレシートは、ここに並びます。</div>';
+  const rows=items=>items.map(r=>`<article class="receipt-row"><div class="row-head"><h3>${esc(r.fileName||'レシート')}</h3><span class="pill receipt-${esc(r.status)} ${r.status==='needsReview'?'review':''}">${{pending:'解析待ち',needsReview:'確認待ち',imported:'取込済み',failed:'保存失敗'}[r.status]||esc(r.status)}</span></div><p class="muted">購入日：${esc(r.purchaseDate||'未確認')}<br>保存日時：${esc(savedTime(r.uploadedAt))}</p>${r.reason?`<p class="muted">${esc(r.reason)}</p>`:''}${r.archiveStatus==='archived'?'<p class="hint">処理済フォルダへ移動済み</p>':r.archiveStatus==='failed'?`<p class="notice">${esc(r.archiveError||'画像を移動できませんでした。')}<br>次に家計簿を開くと、画像の移動だけ再試行します。</p>`:''}${button('receipt-image','画像を見る',r.id)}${canReanalyseReceipt(r)?button('receipt-pending',r.status==='pending'?'補足を追加':'再解析を依頼',r.id):''}${canDeleteReceipt(r)?button('delete-receipt','削除する',r.id,'quiet small negative'):''}</article>`).join('');
+  const imported=receipts.filter(r=>r.status==='imported');
+  const importedOpen=document.querySelector('#imported-receipts')?.open;
+  return rows(receipts.filter(r=>r.status!=='imported'))+(imported.length?`<details id="imported-receipts" class="imported-receipts"${importedOpen?' open':''}><summary>取込済み（${imported.length}件）</summary>${rows(imported)}</details>`:'');
 }
+function closeReceiptReanalysis(force=false) {
+  if(!force&&(busy||pendingCommand))return;
+  const dialog=document.querySelector('#receipt-reanalysis');
+  if(!dialog)return;
+  dialog.close();dialog.remove();
+}
+function showReceiptReanalysis(id) {
+  const receipt=list('receipts').find(r=>r.id===id);
+  if(!receipt||!canReanalyseReceipt(receipt))return;
+  closeReceiptReanalysis();
+  const dialog=document.createElement('dialog');dialog.id='receipt-reanalysis';dialog.className='expense-detail receipt-reanalysis';dialog.setAttribute('aria-labelledby','receipt-reanalysis-title');
+  const adding=receipt.status==='pending';
+  dialog.innerHTML=`<h2 id="receipt-reanalysis-title">${adding?'解析の補足を追加':'再解析を依頼'}</h2><p class="muted">${esc(receipt.fileName||'レシート')}</p>${receipt.reason?`<p class="notice">確認理由：${esc(receipt.reason)}</p>`:''}<div class="analysis-notes">${(receipt.analysisNotes||[]).map(note=>`<article><p class="hint">${esc(savedTime(note.requestedAt))}</p>${note.reviewReason?`<p class="muted">確認理由：${esc(note.reviewReason)}</p>`:''}<p class="analysis-note">${esc(note.memo||'補足なしで再解析を依頼')}</p></article>`).join('')}</div><form id="receipt-reanalysis-form" data-receipt-id="${esc(id)}"><label>解析への補足${adding?'':'（任意）'}<textarea name="memo" maxlength="2000" rows="5" ${adding?'required':''} placeholder="例：購入日は10月4日、支払いは現金です。"></textarea></label><p class="hint">2,000文字まで。定期処理が次に読むときに、この補足を参考に解析します。</p><p id="receipt-reanalysis-error" class="message error" role="alert" hidden></p><div class="form-actions"><button type="submit">${adding?'補足を保存':'再解析を依頼'}</button>${button('close-reanalysis','キャンセル')}<button type="button" id="receipt-reanalysis-retry" data-action="retry-reanalysis" hidden>同じ内容で再試行</button></div></form>`;
+  dialog.addEventListener('cancel',event=>{event.preventDefault();closeReceiptReanalysis();});
+  document.body.append(dialog);dialog.showModal();
+}
+
 function renderRegister() {
   return heading('登録','支出、積立の移動、レシートの記録')+`<div class="tabs" role="tablist" aria-label="登録の種類">${[['expense','支出'],['transfer','積立'],['receipt','レシート']].map(([key,label])=>`<button type="button" role="tab" aria-selected="${tab===key}" data-tab="${key}">${label}</button>`).join('')}</div>`+(tab==='expense'?expenseForm():tab==='transfer'?transferForm():receiptForm());
 }
@@ -244,7 +267,7 @@ function render() {
 }
 function setBusy(value) {
   busy=value;
-  document.querySelectorAll('form button[type="submit"], [data-action="delete-expense"], [data-action="delete-transfer"], [data-action="delete-receipt"], [data-action="receipt-pending"], [data-action="toggle-setting"]').forEach(el=>el.disabled=value || !!pendingCommand);
+  document.querySelectorAll('form button[type="submit"], [data-action="delete-expense"], [data-action="delete-transfer"], [data-action="delete-receipt"], [data-action="receipt-pending"], [data-action="close-reanalysis"], [data-action="toggle-setting"]').forEach(el=>el.disabled=value || !!pendingCommand);
   const plannedDeposits=document.querySelectorAll('[data-action="planned-deposit"]');
   const savingSummary=plannedDeposits.length?summary().savings:[];
   const currentMonth=plannedDeposits.length?today().slice(0,7):'';
@@ -255,6 +278,8 @@ function setBusy(value) {
   document.querySelector('#retry').disabled=value;
   main.setAttribute('aria-busy',String(value));
   updateReceiptUploads();
+  const retry=document.querySelector('#receipt-reanalysis-retry');if(retry){retry.hidden=!pendingCommand;retry.disabled=value;}
+  const memo=document.querySelector('#receipt-reanalysis-form textarea');if(memo)memo.readOnly=value||!!pendingCommand;
 }
 async function mutate(type,payload,onSuccess=()=>render(),exact=null) {
   if (busy || (pendingCommand && !exact) || sessionRole==='viewer') return;
@@ -325,6 +350,8 @@ document.addEventListener('submit',async event=>{
   } else if(form.matches('[data-plan-id]')){
     const plan=list('plans').find(x=>x.id===form.dataset.planId);
     await mutate('savePlan',{...plan,plannedAmount:num(p.plannedAmount),memo:p.memo});
+  } else if(form.id==='receipt-reanalysis-form'){
+    await mutate('requestReceiptReanalysis',{receiptId:form.dataset.receiptId,memo:p.memo},()=>{closeReceiptReanalysis(true);render();return '解析待ちにしました。次の定期処理で補足を参考に解析します。';});
   } else if(form.id==='receipt-form')await uploadReceipts();
 });
 document.addEventListener('input',event=>{if(event.target.closest('#transfer-form'))updateTransferBalance();});
@@ -379,7 +406,7 @@ document.addEventListener('click',async event=>{
     renderAuth();return;
   }
   if(btn.id==='logout'){await logout();return;}
-  if(btn.id==='retry'){if(pendingCommand)await mutate(null,null,pendingSuccess,pendingCommand);return;}
+  if(btn.id==='retry'||btn.dataset.action==='retry-reanalysis'){if(pendingCommand)await mutate(null,null,pendingSuccess,pendingCommand);return;}
   if(busy&&(btn.dataset.page||btn.dataset.tab||btn.dataset.action)){message('保存が終わるまでお待ちください。入力はこの画面に残っています。',true);return;}
   if(pendingCommand&&(btn.dataset.page||btn.dataset.tab||btn.dataset.action)){message('同じ内容で再試行して保存結果を確認してください。入力はこの画面に残っています。',true);return;}
   if(btn.dataset.page){if(btn.dataset.page==='register'){tab='receipt';editing=null;transferPreset=null;}switchPage(btn.dataset.page);return;}
@@ -410,7 +437,8 @@ document.addEventListener('click',async event=>{
   }
   if(action==='receipt-image')await showImage(id,btn);
   if(action==='close-image'){closeImage();btn.closest('.image-panel').remove();}
-  if(action==='receipt-pending')await mutate('setReceiptStatus',{id,status:'pending',reason:''});
+  if(action==='receipt-pending')showReceiptReanalysis(id);
+  if(action==='close-reanalysis')closeReceiptReanalysis();
   if(action==='delete-receipt'){
     const receipt=list('receipts').find(item=>item.id===id);
     if(!receipt || !canDeleteReceipt(receipt))return;

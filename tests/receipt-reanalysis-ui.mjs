@@ -1,0 +1,85 @@
+// Local synthetic fixtures only: never logs in to Google or writes production data.
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+import {readFile,mkdir} from 'node:fs/promises';
+import vm from 'node:vm';
+import path from 'node:path';
+import os from 'node:os';
+const require=createRequire(import.meta.url);
+const {chromium}=require(process.env.HOUSEHOLD_PLAYWRIGHT_MODULE||'playwright');
+const origin=process.env.HOUSEHOLD_PREVIEW_URL||'http://127.0.0.1:4283';
+const output=process.env.HOUSEHOLD_QA_OUTPUT||path.join(os.tmpdir(),'household-reanalysis-qa');
+await mkdir(output,{recursive:true});
+const runtime={};vm.runInNewContext(await readFile(new URL('../shared/domain.js',import.meta.url),'utf8'),runtime);
+const D=runtime.HouseholdDomain;let seed=D.emptyState(),count=0;
+const run=(type,payload)=>{seed=D.execute(seed,{type,payload,operationId:'seed-'+(++count)},{now:'2026-10-05T03:00:00.000Z',uuid:()=>`server-seed-${++count}`}).state;};
+for(const id of ['imported','review','pending'])run('registerReceipt',{id,imageHash:id+'-hash',fileName:id+'.jpg'});
+run('importReceipt',{receiptId:'imported',useDate:'2026-10-04',paymentMethod:'cash',total:100,lines:[{lineId:'one',amount:100,category:'食費',description:'架空商品'}]});
+run('setReceiptStatus',{id:'review',status:'needsReview',reason:'購入日が読めません。'});
+const browser=await chromium.launch({headless:true,channel:'chrome'});
+const context=await browser.newContext({viewport:{width:390,height:844},serviceWorkers:'block'});
+const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+await page.route('**/runtime-config.json',r=>r.fulfill({status:404,body:'Not configured'}));
+let source=await readFile(new URL('../web/transport.js',import.meta.url),'utf8');
+source=source.replace('let state = globalThis.HouseholdDomain.emptyState();',`let state = ${JSON.stringify(seed)};`);
+source=source.replace('const response = globalThis.HouseholdDomain.execute(state, copy(command));',`globalThis.__requests??=[];globalThis.__requests.push(copy(command));
+    if(globalThis.__conflictReanalysis&&command.type==='requestReceiptReanalysis'){globalThis.__conflictReanalysis=false;state=globalThis.HouseholdDomain.execute(state,{type:'requestReceiptReanalysis',operationId:crypto.randomUUID(),payload:{receiptId:command.payload.receiptId,memo:'別端末からの補足'}}).state;}
+    const response = globalThis.HouseholdDomain.execute(state, copy(command));`);
+source=source.replace('state = response.state;\n    return copy(response);',`state = response.state;globalThis.__storedState=copy(state);
+    if(globalThis.__failReanalysis&&command.type==='requestReceiptReanalysis'){globalThis.__failReanalysis=false;throw Object.assign(new Error('通信テスト：保存応答が失われました。'),{code:'TIMEOUT'});}
+    return copy(response);`);
+const png='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlFkAAAAASUVORK5CYII=';
+source=source.replace('dataUrl:images.get(id)',`dataUrl:'${png}'`);
+await page.route('**/web/transport.js',r=>r.fulfill({contentType:'text/javascript',body:source}));
+const click=name=>page.getByRole('button',{name,exact:true}).click();
+const requests=()=>page.evaluate(()=>globalThis.__requests||[]);
+try {
+  await page.goto(origin);await click('サンプルで試す');
+  await page.locator('#saved-receipts>summary').click();
+  assert.equal(await page.locator('#imported-receipts').getAttribute('open'),null);
+  assert.equal(await page.locator('.receipt-row').filter({hasText:'imported.jpg'}).isVisible(),false);
+  const html=await page.locator('#saved-receipts-content').innerHTML();assert.ok(html.indexOf('review.jpg')<html.indexOf('imported.jpg'));
+  await page.locator('#imported-receipts>summary').focus();await page.keyboard.press('Enter');
+  assert.equal(await page.locator('.receipt-row').filter({hasText:'imported.jpg'}).isVisible(),true);
+  await page.locator('.receipt-row').filter({hasText:'imported.jpg'}).getByRole('button',{name:'画像を見る'}).click();
+  await page.locator('.private-image').waitFor();await click('閉じる');
+  const before=(await requests()).length;
+  await click('再解析を依頼');await page.getByRole('dialog').getByText('確認理由：購入日が読めません。',{exact:true}).waitFor();
+  await page.locator('#receipt-reanalysis-form textarea').fill('キャンセルする補足');await page.keyboard.press('Escape');
+  assert.equal(await page.getByRole('dialog').count(),0);assert.equal((await requests()).length,before);
+  await click('再解析を依頼');await page.getByRole('dialog').getByRole('button',{name:'再解析を依頼',exact:true}).click();
+  await page.getByRole('dialog').waitFor({state:'detached'});
+  assert.equal(await page.locator('#saved-receipts').getAttribute('open'),'');assert.equal(await page.locator('#imported-receipts').getAttribute('open'),'');
+  let record=await page.evaluate(()=>globalThis.__storedState.receipts.find(r=>r.id==='review'));
+  assert.equal(record.status,'pending');assert.equal(record.analysisNotes.length,1);assert.equal(record.analysisNotes[0].memo,'');
+  await page.locator('.receipt-row').filter({hasText:'review.jpg'}).getByRole('button',{name:'補足を追加'}).click();
+  const textarea=page.locator('#receipt-reanalysis-form textarea');assert.equal(await textarea.getAttribute('maxlength'),'2000');
+  assert.equal(await textarea.evaluate(el=>el.required),true);
+  const attempts=(await requests()).length;await click('補足を保存');assert.equal((await requests()).length,attempts);
+  await textarea.fill('購入日は2026-10-04、現金払いです。\n商品は食料品です。');
+  await page.evaluate(()=>{globalThis.__failReanalysis=true;});await click('補足を保存');
+  await page.locator('#receipt-reanalysis-error').waitFor({state:'visible'});
+  assert.equal(await textarea.inputValue(),'購入日は2026-10-04、現金払いです。\n商品は食料品です。');
+  assert.equal(await textarea.evaluate(el=>el.readOnly),true);assert.equal(await page.getByRole('button',{name:'キャンセル',exact:true}).isEnabled(),false);
+  await page.screenshot({path:path.join(output,'reanalysis-retry-mobile.png'),fullPage:true});
+  const first=(await requests()).at(-1);await page.getByRole('dialog').getByRole('button',{name:'同じ内容で再試行',exact:true}).click();
+  await page.getByRole('dialog').waitFor({state:'detached'});assert.deepEqual((await requests()).at(-1),first);
+  record=await page.evaluate(()=>globalThis.__storedState.receipts.find(r=>r.id==='review'));assert.equal(record.analysisNotes.length,2);
+  await page.locator('.receipt-row').filter({hasText:'review.jpg'}).getByRole('button',{name:'補足を追加'}).click();
+  await page.getByRole('dialog').getByText('補足なしで再解析を依頼',{exact:true}).waitFor();
+  await page.getByRole('dialog').getByText('確認理由：購入日が読めません。',{exact:true}).waitFor();
+  for(const width of [320,390,768]) {
+    await page.setViewportSize({width,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    assert.equal(await page.getByRole('dialog').evaluate(el=>el.scrollWidth<=el.clientWidth),true);
+  }
+  await textarea.fill('競合後も残す補足');await page.evaluate(()=>{globalThis.__conflictReanalysis=true;});await click('補足を保存');
+  await page.locator('#receipt-reanalysis-error').getByText('最新情報を読み込みました。入力内容を確認して、もう一度保存してください。',{exact:true}).waitFor();
+  assert.equal(await textarea.inputValue(),'競合後も残す補足');assert.equal(await textarea.evaluate(el=>el.readOnly),false);
+  await click('補足を保存');await page.getByRole('dialog').waitFor({state:'detached'});
+  record=await page.evaluate(()=>globalThis.__storedState.receipts.find(r=>r.id==='review'));assert.equal(record.analysisNotes.length,4);assert.equal(record.analysisNotes.at(-1).memo,'競合後も残す補足');
+  await page.locator('.receipt-row').filter({hasText:'review.jpg'}).getByRole('button',{name:'補足を追加'}).click();
+  await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(output,'reanalysis-history-mobile.png'),fullPage:true});
+  await click('キャンセル');
+  assert.deepEqual(errors,[]);
+  console.log(`PASS: grouped imported, keyboard accordion, preserved open state, images, optional empty request, required supplement, history, cancel, lost-response same-command retry, revision-conflict input preservation, 320/390/768 layout. Screenshots: ${output}`);
+} finally {await browser.close();}

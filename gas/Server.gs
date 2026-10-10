@@ -491,6 +491,12 @@ function consumeInbox_(store) {
       if (receipt.deleted) {
         status = 'skipped';
         reason = '削除済みのレシートのため取り込みません。';
+      } else if (receipt.analysisRequestId && payload.analysisRequestId !== receipt.analysisRequestId) {
+        status = 'skipped';
+        reason = payload.analysisRequestId ? '古い解析依頼の結果のため取り込みません。最新の補足を確認して解析してください。' : '解析依頼番号がありません。最新の依頼番号を付けて新しいIDで追記してください。';
+      } else if (!receipt.analysisRequestId && payload.analysisRequestId !== undefined) {
+        status = 'skipped';
+        reason = '対象レシートに対応する解析依頼番号がありません。';
       } else if (previous) {
         // An inbox row is a history of this extraction, not the receipt's
         // current state. A reset C cell must not replay an old review result or
@@ -831,6 +837,7 @@ function domainContext_() { return { uuid: function () { return Utilities.getUui
 function domainExecute_(state, command) {
   try { return HouseholdDomain.execute(state, command, domainContext_()); }
   catch (error) {
+    if (command.type === 'requestReceiptReanalysis' && error && error.code === 'INVALID_INPUT') fail_('INVALID_INPUT', error.message);
     var messages = {
       INVALID_INPUT: '入力内容を確認してください。', CONFLICT: '別の保存が反映されています。再読み込み後にやり直してください。',
       REVISION_CONFLICT: '別の保存が反映されています。再読み込み後にやり直してください。', NOT_FOUND: '対象の記録が見つかりません。',
