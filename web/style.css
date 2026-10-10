@@ -145,3 +145,7 @@ input[type=date]::-webkit-datetime-edit,input[type=month]::-webkit-datetime-edit
 .analysis-note{white-space:pre-wrap;overflow-wrap:anywhere}
 .receipt-reanalysis textarea{width:100%;resize:vertical}
 .receipt-reanalysis .form-actions{flex-wrap:wrap}
+.app-update{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 16px;padding:14px 18px;border:1px solid var(--line);border-radius:12px;background:var(--pale)}
+.app-update[hidden]{display:none}
+.app-update p{margin:4px 0 0;font-size:13px;line-height:1.5}
+.app-update button{flex-shrink:0;min-height:44px}

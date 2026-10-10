@@ -1,5 +1,6 @@
 import { createTransport, createDemoTransport } from './transport.js';
 import { SESSION_STORAGE_KEY, readSession, saveSession, clearSession } from './session.js';
+import { initUpdates } from './update.js?v=0.1.18';
 
 const D = globalThis.HouseholdDomain;
 const CATEGORIES = D.CATEGORIES.filter(category=>category!=='固定費');
@@ -600,5 +601,5 @@ async function initializeConfig() {
 window.addEventListener('storage',event=>{
   if((event.key===SESSION_STORAGE_KEY && (!event.newValue || event.newValue==='null')) || event.key===null)logout();
 });
+initUpdates({canUpdate:()=>!busy && !loginLoading && !pendingCommand});
 await initializeConfig();
-if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
