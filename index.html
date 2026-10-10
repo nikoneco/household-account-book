@@ -10,13 +10,14 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" type="image/svg+xml" href="./assets/icon.svg">
   <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
-  <link rel="stylesheet" href="./web/style.css">
-  <script defer src="./shared/domain.js"></script>
-  <script type="module" src="./web/app.js"></script>
+  <link rel="stylesheet" href="./web/style.css?v=0.1.18">
+  <script defer src="./shared/domain.js?v=0.1.18"></script>
+  <script type="module" src="./web/app.js?v=0.1.18"></script>
 </head>
 <body>
   <div class="app-shell">
     <header class="masthead"><a class="brand" href="./" aria-label="家計簿 ホーム">家計簿</a><button id="logout" class="quiet small" hidden>ログアウト</button></header>
+    <div id="app-update" class="app-update" role="status" hidden><div><strong>最新版があります</strong><p id="app-update-note">入力中の内容は保存してから更新してください。</p></div><button id="app-update-button" type="button" class="quiet">更新</button></div>
     <div id="mode-note" class="mode-note" hidden></div>
     <div id="message" class="message" role="status" aria-live="polite" hidden></div>
     <div id="error" class="message error" role="alert" hidden></div>

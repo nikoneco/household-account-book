@@ -3,13 +3,13 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 function setup(online=true){
- const listeners={},cached=[],deleted=[];
+ const listeners={},cached=[],deleted=[],fetches=[];
  const response={ok:true,type:'basic',clone(){return this}};
- const context=vm.createContext({URL,Set,Promise,self:{registration:{scope:'https://example.github.io/household-account-book/'},addEventListener(type,fn){listeners[type]=fn}},
- caches:{async open(){return {async addAll(urls){cached.push(...urls)},async put(request){cached.push(request.url)}}},async keys(){return ['household-shell-old','household-shell-v0.1.0','household-shell-v0.1.1','household-shell-v0.1.2','household-shell-v0.1.3','household-shell-v0.1.4','household-shell-v0.1.5','household-shell-v0.1.6','household-shell-v0.1.7','household-shell-v0.1.8','household-shell-v0.1.9','household-shell-v0.1.10','household-shell-v0.1.11','household-shell-v0.1.12','household-shell-v0.1.13','household-shell-v0.1.14','household-shell-v0.1.15','household-shell-v0.1.16','kurashi-shell-v1','other-app-private']},async delete(key){deleted.push(key)},async match(){return 'offline-shell'}},
- fetch:async()=>{if(!online)throw new Error('offline');return response}});
+ const context=vm.createContext({URL,Request,Set,Promise,self:{registration:{scope:'https://example.github.io/household-account-book/'},addEventListener(type,fn){listeners[type]=fn}},
+ caches:{async open(){return {async addAll(urls){cached.push(...urls.map(r=>{assert.equal(r.cache,'reload');return './'+new URL(r.url).pathname.split('/household-account-book/')[1]+new URL(r.url).search}))},async put(request){cached.push(request.url)}}},async keys(){return ['household-shell-old','household-shell-v0.1.0','household-shell-v0.1.1','household-shell-v0.1.2','household-shell-v0.1.3','household-shell-v0.1.4','household-shell-v0.1.5','household-shell-v0.1.6','household-shell-v0.1.7','household-shell-v0.1.8','household-shell-v0.1.9','household-shell-v0.1.10','household-shell-v0.1.11','household-shell-v0.1.12','household-shell-v0.1.13','household-shell-v0.1.14','household-shell-v0.1.15','household-shell-v0.1.16','household-shell-v0.1.17','kurashi-shell-v1','other-app-private']},async delete(key){deleted.push(key)},async match(){return 'offline-shell'}},
+ fetch:async(request,options)=>{fetches.push({request,options});if(!online)throw new Error('offline');return response}});
  vm.runInContext(fs.readFileSync(require.resolve('../sw.js'),'utf8'),context);
- return {listeners,cached,deleted};
+ return {listeners,cached,deleted,fetches};
 }
 test('service worker bypasses configuration, private API, images, login and external requests',()=>{
  const {listeners}=setup();
@@ -30,9 +30,22 @@ test('offline shell fallback and activation retain other applications caches',as
  h.listeners.fetch({request:{url:'https://example.github.io/household-account-book/index.html',method:'GET'},respondWith(promise){pending=promise}});
  assert.equal(await pending,'offline-shell');
  h.listeners.activate({waitUntil(promise){pending=promise}});await pending;
- assert.deepEqual(h.deleted,['household-shell-old','household-shell-v0.1.0','household-shell-v0.1.1','household-shell-v0.1.2','household-shell-v0.1.3','household-shell-v0.1.4','household-shell-v0.1.5','household-shell-v0.1.6','household-shell-v0.1.7','household-shell-v0.1.8','household-shell-v0.1.9','household-shell-v0.1.10','household-shell-v0.1.11','household-shell-v0.1.12','household-shell-v0.1.13','household-shell-v0.1.14','household-shell-v0.1.15','household-shell-v0.1.16']);
+ assert.deepEqual(h.deleted,['household-shell-old','household-shell-v0.1.0','household-shell-v0.1.1','household-shell-v0.1.2','household-shell-v0.1.3','household-shell-v0.1.4','household-shell-v0.1.5','household-shell-v0.1.6','household-shell-v0.1.7','household-shell-v0.1.8','household-shell-v0.1.9','household-shell-v0.1.10','household-shell-v0.1.11','household-shell-v0.1.12','household-shell-v0.1.13','household-shell-v0.1.14','household-shell-v0.1.15','household-shell-v0.1.16','household-shell-v0.1.17']);
  h.listeners.install({waitUntil(promise){pending=promise}});await pending;
  assert.ok(h.cached.includes('./index.html'));
  assert.ok(h.cached.includes('./web/session.js')); // Public code only, never a session response.
  assert.ok(h.cached.every(value=>!/(runtime-config|receipt|api\/session|state)/.test(value)));
 });
+
+test('shell fetch revalidates HTTP cache and precached URLs match HTML release',async()=>{
+ const h=setup();let pending;
+ const html=fs.readFileSync(require.resolve('../index.html'),'utf8');
+ for(const url of [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(m=>m[1]).filter(p=>p.startsWith('./web/')||p.startsWith('./shared/'))){
+  h.listeners.fetch({request:{url:new URL(url,'https://example.github.io/household-account-book/').href,method:'GET'},respondWith(p){pending=p}});
+  assert.ok(pending,url);await pending;assert.equal(h.fetches.at(-1).options.cache,'no-cache');pending=null;
+ }
+ h.listeners.install({waitUntil(p){pending=p}});await pending;
+ for(const m of html.matchAll(/(?:src|href)="([^"]+)"/g))if(m[1].startsWith('./web/')||m[1].startsWith('./shared/'))assert.ok(h.cached.includes(m[1]),m[1]);
+});
+
+test('versioned navigation falls back to public shell while arbitrary queries bypass',async()=>{const h=setup(false);let pending;h.listeners.fetch({request:{url:'https://example.github.io/household-account-book/?v=0.1.19',method:'GET',mode:'navigate'},respondWith(p){pending=p}});assert.equal(await pending,'offline-shell');for(const suffix of ['?token=private','?v=0.1.19&session=private']){let handled=false;h.listeners.fetch({request:{url:'https://example.github.io/household-account-book/'+suffix,method:'GET',mode:'navigate'},respondWith(){handled=true}});assert.equal(handled,false)}});

@@ -373,3 +373,12 @@ Pages 1289fc03 built、Actions37789544896 success、公開13アセットが配�
 GAS v17と草稿を退避し、同じデプロイをv18へ更新、公開4ソース一致。Pages 5e0d5cf7 built、Actions 38014383214 success、13公開アセットのバイト一致、SW household-shell-v0.1.17。Driveの同じSCHEDULE_PROMPT.mdへ新版をアップロードし全文の改行正規化一致を確認。ChatGPT「家計簿レシート処理」の補足・依頼番号対応を保存し候補と完全一致する読み戻しを確認、稼働・3時間ごと・正常時無通知を保持、書込みは新規Inbox A:Bだけ。手動実行なし。
 
 通常Chromeの公開PWAは既存ログインで復元し、取込済み37件の内側アコーディオン、解析待ちの補足入力欄、取消後の一覧復元を確認。公開タブのerrorログ0件。本番への試験メモ・再解析要求・合成データの送信なし。証跡.local/receipt-notes-release/public-receipts.jpg。物理スマホ、新補足を使用する実際のChatGPT解析は未確認で、通常の次回処理で確認する。
+
+
+## 2026-10-10 PWAの更新通知とキャッシュ再確認
+
+利用者がAndroid/iPhoneで閉じても旧表示と報告。公開通常URLのindex/app/CSS/SWは前回版と一致したがHTTP Cache-Control max-age=600、旧SW fetchもHTTPキャッシュを利用しており、端末で旧表示が残る可能性を確認（端末内の原因は直接未確認）。最新版を閉じて開けば必ず切り替わるとは扱わない。変更app/CSS/domainは版番号付きURL、precacheはreload、shellネットワークはno-cache、SW script updateViaCache noneへ変更。トップに最新版通知と更新ボタン、起動・復帰・onlineで公開SW版を確認し、新しい版だけ通知。クリックのみ切替、保存/認証中・保存結果不明は保護、Worker install/activate失敗・15秒timeoutは画面保持と再試行。session/localStorageは消さない。version-only navigationのoffline canonical fallbackは個人/API/任意queryを対象外に維持。
+
+rootと新規独立レビューで9/9 test、check、build、diff-check成功。7file SHA256を固定し、reviewer自身もhash前後一致・9test・install redundantとactivation遅延を確認してPASS。rootの合成プレビューで旧版通知→クリック→v0.1.18 URL→通知消去を実ブラウザ確認。最初のfixtureはprecacheが新旧フラグを切替えていたためfixtureのみ修正。実装root現設定・独立レビューSol High指定、実設定個別照会不能。
+
+Pages a917c04d built、Actions38015264127 success、14公開アセットのバイト一致。SW household-shell-v0.1.18、GAS v18維持。公開Chromeの版番号URLで既存ログイン復元、newscript/css query・更新通知要素（現版なので非表示）・取込済み37件と補足ボタン・error0確認。本番試験入力なし。今回の旧UIには更新ボタンがないため、初回の版番号URLを案内する。Android/iPhoneのインストール済みPWA内の切替、多タブ実機は未確認。証跡.local/cache-update-release/update-banner.jpg（合成旧版）、public-v18.jpg（公開現版）。
