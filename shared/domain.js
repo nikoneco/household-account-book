@@ -208,6 +208,15 @@ var HouseholdDomain = (function () {
       if (!row.uploadedAt || timestamp(row.uploadedAt) !== row.uploadedAt) fail('INVALID_INPUT', 'アップロード日時を確認してください。');
       if (row.purchaseDate != null) date(row.purchaseDate);
       if (own(row, 'merchant')) text(row.merchant, '店名', true, 120);
+      if (own(row, 'analysisRequestId')) identifier(row.analysisRequestId, '解析依頼番号');
+      if (own(row, 'analysisNotes')) {
+        if (!Array.isArray(row.analysisNotes) || JSON.stringify(row.analysisNotes).length > 12000) fail('INVALID_INPUT', '補足履歴が保存上限を超えています。');
+        row.analysisNotes.forEach(function (note) {
+          object(note, '補足履歴'); identifier(note.analysisRequestId, '解析依頼番号');
+          if (timestamp(note.requestedAt) !== note.requestedAt) fail('INVALID_INPUT', '補足日時を確認してください。');
+          text(note.memo, '解析の補足', false, 2000); text(note.reviewReason, '確認理由', false);
+        });
+      }
       if (!Array.isArray(row.expenseIds)) fail('INVALID_INPUT', 'レシート明細リンクを確認してください。');
       if (own(row, 'deleted')) bool(row.deleted, 'レシートの削除状態');
       if (row.deleted && (row.status === 'imported' || row.expenseIds.length)) fail('INVALID_INPUT', '取込済みのレシートは削除できません。');
@@ -517,6 +526,18 @@ var HouseholdDomain = (function () {
     receipt.reason = status === 'pending' ? '' : text(p.reason || '', '確認理由', false);
     return receipt;
   }
+  function requestReceiptReanalysis(state, p, context) {
+    var receipt = byId(state.receipts, p.receiptId || p.id, 'レシート');
+    if (receipt.deleted || receipt.expenseIds.length || ['needsReview', 'pending'].indexOf(receipt.status) < 0) fail('CONFLICT', '確認待ち・解析待ちの未取込レシートだけに依頼できます。');
+    var memo = text(p.memo || '', '解析の補足', false, 2000).trim();
+    if (receipt.status === 'pending' && !memo) fail('INVALID_INPUT', '追加する補足を入力してください。');
+    var requestId = createId(context);
+    var notes = (receipt.analysisNotes || []).concat([{ analysisRequestId: requestId, requestedAt: context.now, memo: memo, reviewReason: receipt.reason || '' }]);
+    if (JSON.stringify(notes).length > 12000) fail('INVALID_INPUT', '補足履歴が保存上限に達しています。過去の補足を保護するため保存できません。');
+    receipt.analysisNotes = notes; receipt.analysisRequestId = requestId;
+    receipt.status = 'pending'; receipt.reason = '';
+    return receipt;
+  }
   function importReceipt(state, p) {
     var receipt = byId(state.receipts, p.receiptId, 'レシート');
     if (receipt.deleted) fail('CONFLICT', '削除済みのレシートは取り込めません。');
@@ -588,7 +609,7 @@ var HouseholdDomain = (function () {
     if (previous) {
       // A replayed old upload/review must not present its pre-deletion snapshot
       // as a saved active receipt. Delete retries themselves remain idempotent.
-      if (['registerReceipt', 'setReceiptStatus', 'importReceipt'].indexOf(previous.type) >= 0) {
+      if (['registerReceipt', 'setReceiptStatus', 'requestReceiptReanalysis', 'importReceipt'].indexOf(previous.type) >= 0) {
         var savedReceipt = previous.type === 'importReceipt' ? previous.result && previous.result.receipt : previous.result;
         if (savedReceipt && input.receipts.some(function (row) { return row.id === savedReceipt.id && row.deleted; })) fail('CONFLICT', 'このレシートは削除済みです。');
       }
@@ -620,6 +641,7 @@ var HouseholdDomain = (function () {
       case 'registerReceipt': result = registerReceipt(state, p, context); break;
       case 'importReceipt': result = importReceipt(state, p); break;
       case 'setReceiptStatus': result = setReceiptStatus(state, p); break;
+      case 'requestReceiptReanalysis': result = requestReceiptReanalysis(state, p, context); break;
       case 'deleteReceipt': result = deleteReceipt(state, p); break;
       default: fail('INVALID_INPUT', '未対応の操作です。');
     }

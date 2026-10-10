@@ -137,3 +137,11 @@ input[type=date]::-webkit-datetime-edit,input[type=month]::-webkit-datetime-edit
 .withdrawable-panel{background:var(--pale)}
 .withdrawable-value{font-size:clamp(26px,3.4vw,36px);line-height:1.3;font-weight:650;font-variant-numeric:tabular-nums;margin:12px 0 18px;overflow-wrap:anywhere}
 @media(max-width:640px){.home-finance-columns{align-items:start}.home-finance-side{grid-template-rows:auto auto}.withdrawable-value{font-size:30px}}
+
+.imported-receipts{margin-top:20px;border-top:1px solid var(--line)}
+.imported-receipts>summary{cursor:pointer;padding:18px 0;font-weight:650}
+.imported-receipts>summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.analysis-notes article{border-bottom:1px solid var(--line);margin-bottom:16px;padding-bottom:8px}
+.analysis-note{white-space:pre-wrap;overflow-wrap:anywhere}
+.receipt-reanalysis textarea{width:100%;resize:vertical}
+.receipt-reanalysis .form-actions{flex-wrap:wrap}
