@@ -12,12 +12,12 @@ const browser=await chromium.launch({headless:true,channel:process.env.HOUSEHOLD
 try {
   const page=await browser.newPage({viewport:{width:390,height:844},serviceWorkers:'block'});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.clock.install({time:new Date('2026-10-05T23:30:00+09:00')});
+  await page.clock.install({time:new Date('2026-09-05T23:30:00+09:00')});
   await page.route('**/runtime-config.json',r=>r.fulfill({status:404,body:'Local fixture'}));
   let app=(await readFile(new URL('../web/app.js',import.meta.url),'utf8')).replace(/\r\n/g,'\n');
   app=app.replace('function summary() {','function summary() { globalThis.__summaryCalls=(globalThis.__summaryCalls||0)+1;');
   app=app.replace('\nawait initializeConfig();\n','\nglobalThis.__householdTest={transport:()=>transport,setBusy,refresh:async()=>{state=await transport.load();render();}};\nawait initializeConfig();\n');
-  await page.route('**/web/app.js',r=>r.fulfill({contentType:'text/javascript',body:app}));
+  await page.route('**/web/app.js*',r=>r.fulfill({contentType:'text/javascript',body:app}));
   await page.goto(process.env.HOUSEHOLD_PREVIEW_URL||'http://127.0.0.1:4283/');
   const click=name=>page.getByRole('button',{name,exact:true}).click();
   const saved=()=>page.locator('#message').filter({hasText:'保存しました。'}).waitFor();
@@ -64,6 +64,11 @@ try {
   await form.locator('[name=plannedAmount]').fill('0');
   await form.getByRole('button',{name:'項目を追加'}).click();
   await page.waitForFunction(()=>document.querySelectorAll('.monthly-form').length===2);
+  await page.clock.setFixedTime(new Date('2026-10-05T23:30:00+09:00'));
+  await page.locator('#month').fill('2026-10');
+  const octoberPlan=page.locator('.monthly-form').filter({hasText:'予定額の積立'});
+  await octoberPlan.locator('[name=plannedAmount]').fill('12345');
+  await octoberPlan.getByRole('button',{name:'この月の予定を保存'}).click();await saved();
   await click('ホーム');
   // Multiple savings buttons share one current summary for each busy-state update.
   assert.equal(await page.locator('[data-action="planned-deposit"]').count(),2);
@@ -80,14 +85,30 @@ try {
   const deposit=row.getByRole('button',{name:'この金額で入金'});
   assert.equal(await row.locator('.saving-plan strong').innerText(),'¥12,345');
   assert.equal(await page.locator('.saving-row').filter({hasText:'ゼロ予定'}).getByRole('button',{name:'この金額で入金',includeHidden:true}).isEnabled(),false);
-  await page.locator('#month').fill('2026-11');
-  await openRow();
-  assert.equal(await deposit.isEnabled(),false);
-  await row.getByText('予定額での入金は今月の表示で使えます。',{exact:false}).waitFor();
-  await page.locator('#month').fill('2026-09');
-  await openRow();
-  assert.equal(await deposit.isEnabled(),false);
-  assert.equal((await state()).transfers.length,0);
+  for(const [targetMonth,amount] of [['2026-11',9000],['2026-09',12345],['2027-01',9000]]){
+    await page.locator('#month').fill(targetMonth);
+    await openRow();
+    assert.equal(await deposit.isEnabled(),true);
+    await row.getByText(`この月への入金は${targetMonth}-01付で記録します。`,{exact:true}).waitFor();
+    await deposit.click();
+    await page.locator('#message').filter({hasText:`予定額の積立に¥${amount.toLocaleString('ja-JP')}を入金しました（${targetMonth}-01）。`}).waitFor();
+    const data=await state();
+    assert.equal(data.transfers.length,1);
+    assert.equal(data.transfers[0].date,`${targetMonth}-01`);
+    assert.equal(data.transfers[0].month,targetMonth);
+    assert.equal(data.transfers[0].amount,amount);
+    assert.equal(await row.locator('summary .saving-item-paid').innerText(),'入金済');
+    await openRow();
+    assert.equal(await row.getByRole('button',{name:'入金済み'}).isEnabled(),false);
+    assert.equal(await page.locator('.big-money').innerText(),`¥-${amount.toLocaleString('ja-JP')}`);
+    if(targetMonth==='2026-11')await page.screenshot({path:path.join(output,'planned-deposit-november.png'),fullPage:true});
+    // Remove only this demo transfer so the existing retry/balance checks stay isolated.
+    await page.evaluate(async id=>{
+      const t=globalThis.__householdTest.transport(),current=await t.load();
+      await t.mutate({type:'deleteTransfer',payload:{id},operationId:crypto.randomUUID(),expectedRevision:current.revision});
+      await globalThis.__householdTest.refresh();
+    },data.transfers[0].id);
+  }
   await page.locator('#month').fill('2026-10');
   await openRow();
   // Hold the real demo save, then lose its response. Retry must use the same command.
@@ -152,10 +173,11 @@ try {
   }),0,'Busy update skips financial summary when no savings buttons exist');
   assert.equal(await page.locator('#expense-form [name=planId] option').evaluateAll((nodes,id)=>nodes.some(node=>node.value===id),bankPlan.id),false,'Automatically paid bank plans cannot be reselected for a new expense');
   await click('履歴');
-  await page.locator('.entry').filter({hasText:'自動銀行固定費'}).getByRole('button',{name:'編集',exact:true}).click();
+  await page.locator('.entry').filter({hasText:'自動銀行固定費'}).locator('.history-open').click();
+  await page.locator('#expense-detail').getByRole('button',{name:'編集',exact:true}).click();
   assert.equal(await page.locator('#expense-form [name=planId]').inputValue(),bankPlan.id,'Intentional actual editing retains its fixed plan');
   assert.equal(await page.getByRole('tab',{name:'支出',exact:true}).getAttribute('aria-selected'),'true','Explicit expense edit keeps expense tab');
   assert.deepEqual(errors,[]);
-  console.log('PASS: receipt default navigation, saving-only fields/plans, exact planned deposit with JST date, zero/other-month guards, busy/pending/idempotent retry, saved balance, mobile widths and automatic bank actual edit/duplicate-selection guards.');
+  console.log('PASS: receipt default navigation, saving-only fields/plans, today JST for current month, day one for past/future/year boundary, zero/paid guards, busy/pending/idempotent retry, saved balance, mobile widths and automatic bank actual edit/duplicate-selection guards.');
   console.log('Screenshot: '+path.join(output,'11-planned-deposit-mobile.png'));
 } finally {await browser.close();}

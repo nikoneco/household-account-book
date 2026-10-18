@@ -485,6 +485,24 @@ test('purchase-linked withdrawals validate cumulative amount, saving kind and fu
   b.attempt('upsertExpense', { useDate: '2026-10-05', amount: 10, fundingSettingId: 'fixed' });
 });
 
+test('month-first future deposits survive validation and count only in their recorded month', () => {
+  const b = book('2026-10-05T14:30:00.000Z');
+  saving(b);
+  for (const [id, date] of [['past', '2026-09-01'], ['next', '2026-11-01'], ['next-year', '2027-01-01']]) {
+    deposit(b, { id, date, month: date.slice(0, 7), amount: 20000 });
+    assert.equal(D.summarize(b.state, date.slice(0, 7)).savingsDeposited, 20000);
+    assert.equal(D.summarize(b.state, date.slice(0, 7)).monthlyRemaining, -20000);
+  }
+  b.run('saveIncome', { month: '2026-10', amount: 300000 });
+  assert.equal(D.summarize(b.state, '2026-10').savingsDeposited, 0);
+  assert.equal(D.summarize(b.state, '2026-10').monthlyRemaining, 300000);
+  b.attempt('saveTransfer', { date: '2026-11-02', settingId: 'saving', kind: 'deposit', amount: 1000 });
+  b.attempt('saveTransfer', { date: '2026-11-01', settingId: 'saving', kind: 'withdrawal', amount: 1000 });
+  b.attempt('saveTransfer', { date: '2026-11-01', month: '2026-10', settingId: 'saving', kind: 'deposit', amount: 1000 });
+  b.run('deleteTransfer', { id: 'next' });
+  assert.equal(D.summarize(b.state, '2026-11').savingsDeposited, 0);
+});
+
 test('card savings designation leaves balance unchanged until actual withdrawal in billing month', () => {
   const b = book('2026-12-10T02:00:00.000Z');
   saving(b);

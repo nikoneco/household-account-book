@@ -382,3 +382,13 @@ GAS v17と草稿を退避し、同じデプロイをv18へ更新、公開4ソー
 rootと新規独立レビューで9/9 test、check、build、diff-check成功。7file SHA256を固定し、reviewer自身もhash前後一致・9test・install redundantとactivation遅延を確認してPASS。rootの合成プレビューで旧版通知→クリック→v0.1.18 URL→通知消去を実ブラウザ確認。最初のfixtureはprecacheが新旧フラグを切替えていたためfixtureのみ修正。実装root現設定・独立レビューSol High指定、実設定個別照会不能。
 
 Pages a917c04d built、Actions38015264127 success、14公開アセットのバイト一致。SW household-shell-v0.1.18、GAS v18維持。公開Chromeの版番号URLで既存ログイン復元、newscript/css query・更新通知要素（現版なので非表示）・取込済み37件と補足ボタン・error0確認。本番試験入力なし。今回の旧UIには更新ボタンがないため、初回の版番号URLを案内する。Android/iPhoneのインストール済みPWA内の切替、多タブ実機は未確認。証跡.local/cache-update-release/update-banner.jpg（合成旧版）、public-v18.jpg（公開現版）。
+
+## 2026-10-18 表示月の月初付で積立入金
+
+ホームの積立残高「この金額で入金」の当月限定を解除。表示月の予定額を使い、今月なら日本時間の今日、過去・未来月なら表示月の1日付で保存する。別月の画面には保存日を明記。入金済み・予定0円・保存中・保存結果不明・閲覧者の制限は維持。Domainは未来日の月初入金だけ許可し、未来の取り崩しと月初以外の未来日、日付と対象月の不一致は拒否する。手動入出金フォームの日付制限、台帳形式、既存の累積残高計算は維持。
+
+166/166 tests、check、build、diff-check成功。planned-deposit UIで今月の今日付、11月1日、過去9月1日、年またぎ1月1日、月別の残額・入金済み、予定額上書き、保存結果不明から同一操作で再試行して1件だけ保存、320/375/414/768pxを確認。settings-savings UIでも開閉、入金済み・一部・0円・超過・削除後の表示と同じ4幅を確認。既存テストの更新通知関数stub欠落、版番号queryに一致しないapp route、旧履歴の編集selectorを現行UIに合わせて修正。Browser plugin not availableのため既存Playwright/Chromeで検証。独立エージェントレビューは実施していない。
+
+GASの草稿・公開v18を退避し、Domainだけ変更して同じデプロイをv19へ更新。直後のGETは旧v18を返したため、書込みを再実行せず読み戻しでv19と全4ソースを照合し、他3ソース・公開endpoint・access維持を確認。本番台帳への試験入金は行っていない。
+
+Pages ce3e5b6d built、14公開アセットが配信Git blobおよびビルド内容と一致、SW household-shell-v0.1.19。公開の未改変サンプルをChrome 1280×900/390×844で操作し、11月のボタン有効→入金済み→履歴に2026-11-01・12,000円、10月の給与残額0円と月別の未入金状態を確認。意味のある画面・タイトル・URL・横溢れなし・アプリ例外なしを確認。Google GIS client由来のinline-style CSP通知1件は読み込み時の外部スクリプトに限定され、積立操作の例外0件。PlaywrightによるSWブロック警告はテスト設定によるもの。GoogleへのPOSTは初期化wardeninitのみ観測、家計保存RPCなし。証跡はTemp/household-planned-month-publicのproof.jsonと4画像。本番ログインからの試験入金、Android/iPhoneのインストール済みPWA表示は未確認。

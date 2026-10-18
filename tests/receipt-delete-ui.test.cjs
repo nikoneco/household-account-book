@@ -14,7 +14,7 @@ function app(receipts, role = 'editor') {
     if (!nodes.has(id)) nodes.set(id, { hidden: true, textContent: '', disabled: false, setAttribute() {} });
     return nodes.get(id);
   };
-  const context = vm.createContext({ crypto: webcrypto, Intl, console,
+  const context = vm.createContext({ crypto: webcrypto, Intl, console, initUpdates() {},
     document: { querySelector: node, querySelectorAll: () => [], addEventListener: (type, handler) => { listeners[type] = handler; } },
     window: { addEventListener() {} }, confirm: () => true, URL: { revokeObjectURL() {} }
   });

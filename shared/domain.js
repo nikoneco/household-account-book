@@ -266,7 +266,8 @@ var HouseholdDomain = (function () {
     state.transfers.forEach(function (row) {
       date(row.date); month(row.month);
       if (row.month !== row.date.slice(0, 7)) fail('INVALID_INPUT', '資金移動の日付と対象月が一致しません。');
-      if (today && row.date > today) fail('INVALID_INPUT', '未来日の資金移動は実績に登録できません。');
+      // The home shortcut can record a displayed future month's deposit on day one.
+      if (today && row.date > today && (row.kind !== 'deposit' || row.date.slice(8) !== '01')) fail('INVALID_INPUT', '未来日は月初の積立入金だけ登録できます。');
       amount(row.amount, '資金移動額', true); text(row.memo, 'メモ', false);
       oneOf(row.kind, ['deposit', 'withdrawal'], '資金移動種別');
       var setting = lookup('settings', row.settingId, '積立設定');

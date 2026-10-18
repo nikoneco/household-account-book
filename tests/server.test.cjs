@@ -847,6 +847,24 @@ test('invalid pre-existing domain data is rejected without overwriting tables', 
   assert.equal(h.io.batches.length, 0); assert.deepEqual(h.sheets.get('HB_Expenses').rows, before);
 });
 
+test('future month-first deposits persist through authenticated save, retry and reload', () => {
+  const h = harness({ domain: realDomain(), now: '2026-10-05T03:00:00.000Z' });
+  const session = h.login().session;
+  const mutate = (type, operationId, payload) => h.call('rpc', { session, operation: 'mutate', payload: { type, operationId, payload } });
+  const setting = mutate('saveSetting', 'future-saving', { kind: 'saving', name: '旅行', plannedAmount: 100, openingBalance: 0 }).result;
+  const transfer = { settingId: setting.id, kind: 'deposit', amount: 100, date: '2026-11-01', month: '2026-11' };
+  mutate('saveTransfer', 'future-deposit', transfer);
+  mutate('saveTransfer', 'future-deposit', transfer);
+  const loaded = h.call('rpc', { session, operation: 'load' });
+  assert.equal(loaded.transfers.length, 1);
+  assert.equal(loaded.transfers[0].date, '2026-11-01');
+  assert.equal(loaded.transfers[0].month, '2026-11');
+  const d = realDomain();
+  assert.equal(d.summarize(loaded, '2026-10').savingsDeposited, 0);
+  assert.equal(d.summarize(loaded, '2026-11').savingsDeposited, 100);
+  assert.equal(h.sheets.get('HB_Transfers').getLastRow(), 2);
+});
+
 test('deleting a real transfer clears the owned table tail without touching other sheets', () => {
   const h = harness({ domain: realDomain() }); const session = h.login().session;
   const mutate = (type, operationId, payload) => h.call('rpc', { session, operation: 'mutate', payload: { type, operationId, payload } });
