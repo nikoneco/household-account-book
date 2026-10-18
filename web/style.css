@@ -60,6 +60,9 @@ input[type=date]::-webkit-datetime-edit,input[type=month]::-webkit-datetime-edit
 @media(max-width:640px){.category.outflow-category-summary{grid-template-columns:64px minmax(15px,1fr) auto 8px}}
 .saving-plan-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;min-width:0}
 .saving-plan-actions button:disabled{cursor:default}
+.saving-custom-actions{display:flex;justify-content:flex-end;margin-top:10px}
+.custom-deposit-form .hint:first-child{margin:0 0 12px}
+.custom-deposit-form .form-actions{flex-wrap:wrap}
 @media(max-width:640px){.saving-plan-actions{gap:8px}.saving-plan-actions strong{font-size:14px}}
 
 /* Hallmark · component: monthly-setting-groups · genre: editorial · theme: existing sage and paper
