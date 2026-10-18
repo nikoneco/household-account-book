@@ -28,6 +28,10 @@ export function createTransport(config, environment = {}) {
   const iframe = doc.createElement('iframe');
   iframe.title = '家計簿の安全な接続';
   iframe.hidden = true;
+  // The bridge is anonymous; only the explicit app session authorizes RPCs.
+  // Isolate Google's ambient cookies to avoid account-index redirects to 404.
+  // Unsupported browsers retain the existing transport and authentication.
+  if ('credentialless' in iframe) iframe.credentialless = true;
   iframe.referrerPolicy = 'no-referrer';
   iframe.src = url.href;
   function onMessage(event) {
