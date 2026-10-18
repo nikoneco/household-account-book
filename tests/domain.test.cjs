@@ -485,6 +485,40 @@ test('purchase-linked withdrawals validate cumulative amount, saving kind and fu
   b.attempt('upsertExpense', { useDate: '2026-10-05', amount: 10, fundingSettingId: 'fixed' });
 });
 
+test('no-deposit decisions persist per savings month without changing money or budgets', () => {
+  const b = book('2026-10-18T03:00:00.000Z');saving(b);saving(b,{id:'other'});fixed(b);
+  b.run('materializeMonth',{month:'2026-10'});b.run('materializeMonth',{month:'2026-11'});
+  const before=plain(b.state);
+  b.run('setDepositSkipped',{settingId:'saving',month:'2026-10',skipped:true});
+  assert.equal(D.summarize(b.state,'2026-10').savings.find(s=>s.settingId==='saving').depositSkipped,true);
+  assert.equal(D.summarize(b.state,'2026-10').savings.find(s=>s.settingId==='other').depositSkipped,false);
+  assert.equal(D.summarize(b.state,'2026-11').savings.find(s=>s.settingId==='saving').depositSkipped,false);
+  assert.deepEqual(plain(b.state.transfers),before.transfers);assert.deepEqual(plain(b.state.settings),before.settings);
+  assert.equal(D.balance(b.state,'saving'),50000);
+  assert.equal(b.state.plans.find(p=>p.month==='2026-10'&&p.settingId==='saving').plannedAmount,20000);
+  b.run('savePlan',{...b.state.plans.find(p=>p.month==='2026-10'&&p.settingId==='saving'),plannedAmount:1234});
+  assert.equal(D.summarize(b.state,'2026-10').savings.find(s=>s.settingId==='saving').depositSkipped,true);
+  b.attempt('setDepositSkipped',{settingId:'fixed',month:'2026-10',skipped:true});
+  b.attempt('setDepositSkipped',{settingId:'saving',month:'2026-13',skipped:true});
+  b.attempt('setDepositSkipped',{settingId:'saving',month:'2026-10',skipped:'true'});
+  b.run('setDepositSkipped',{settingId:'saving',month:'2026-10',skipped:false});
+  assert.equal(D.summarize(b.state,'2026-10').savings.find(s=>s.settingId==='saving').depositSkipped,false);
+});
+
+test('a missing past plan records only the decision with a zero budget; a real deposit clears it atomically', () => {
+  const b = book('2026-10-18T03:00:00.000Z');saving(b);
+  b.run('setDepositSkipped',{settingId:'saving',month:'2026-09',skipped:true});
+  const plan=b.state.plans.find(p=>p.month==='2026-09');assert.equal(plan.plannedAmount,0);
+  assert.equal(D.summarize(b.state,'2026-09').savings[0].depositSkipped,true);
+  b.attempt('saveTransfer',{settingId:'saving',kind:'deposit',amount:0,date:'2026-09-01'});
+  assert.equal(b.state.plans[0].depositSkipped,true);
+  deposit(b,{date:'2026-09-01',amount:100});
+  assert.equal(D.summarize(b.state,'2026-09').savings[0].depositSkipped,false);
+  b.attempt('setDepositSkipped',{settingId:'saving',month:'2026-09',skipped:true},'CONFLICT');
+  b.run('deleteTransfer',{id:'deposit'});assert.equal(D.summarize(b.state,'2026-09').savings[0].depositSkipped,false);
+  const bad=plain(b.state);bad.plans[0].depositSkipped='yes';invalid(()=>D.summarize(bad,'2026-09'));
+});
+
 test('month-first future deposits survive validation and count only in their recorded month', () => {
   const b = book('2026-10-05T14:30:00.000Z');
   saving(b);

@@ -847,6 +847,25 @@ test('invalid pre-existing domain data is rejected without overwriting tables', 
   assert.equal(h.io.batches.length, 0); assert.deepEqual(h.sheets.get('HB_Expenses').rows, before);
 });
 
+test('no-deposit decisions save atomically, deduplicate retries and survive authenticated reload', () => {
+  for(const fault of ['before','after']){
+    const h=harness({domain:realDomain(),now:'2026-10-18T03:00:00.000Z'}),session=h.login().session;
+    const mutate=(type,operationId,payload)=>h.call('rpc',{session,operation:'mutate',payload:{type,operationId,payload}});
+    const setting=mutate('saveSetting','create-skip-saving',{kind:'saving',name:'旅行',plannedAmount:5000,openingBalance:100}).result;
+    mutate('materializeMonth','skip-month',{month:'2026-10'});
+    const before=clone(h.storedState());
+    const command={type:'setDepositSkipped',operationId:'skip-once',expectedRevision:before.revision,payload:{settingId:setting.id,month:'2026-10',skipped:true}};
+    h.setBatchFault(fault);assert.throws(()=>h.call('rpc',{session,operation:'mutate',payload:command}),/SAVE_FAILED/);
+    h.call('rpc',{session,operation:'mutate',payload:command});
+    const loaded=h.call('rpc',{session,operation:'load'});
+    assert.equal(loaded.plans.find(p=>p.settingId===setting.id&&p.month==='2026-10').depositSkipped,true);
+    assert.equal(h.storedState().operations.filter(o=>o.operationId==='skip-once').length,1);
+    assert.deepEqual(clone(loaded.transfers),before.transfers);assert.deepEqual(clone(loaded.settings),before.settings);
+    mutate('setDepositSkipped','undo-skip',{settingId:setting.id,month:'2026-10',skipped:false});
+    assert.equal(realDomain().summarize(h.call('rpc',{session,operation:'load'}),'2026-10').savings[0].depositSkipped,false);
+  }
+});
+
 test('future month-first deposits persist through authenticated save, retry and reload', () => {
   const h = harness({ domain: realDomain(), now: '2026-10-05T03:00:00.000Z' });
   const session = h.login().session;

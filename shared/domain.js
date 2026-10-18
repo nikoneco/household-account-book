@@ -196,6 +196,11 @@ var HouseholdDomain = (function () {
       oneOf(row.category, RECORD_CATEGORIES, '分類');
       text(row.memo, 'メモ', false);
       if (own(row, 'bankAutoHandled')) bool(row.bankAutoHandled, '固定費の処理状態');
+      if (own(row, 'depositSkipped')) {
+        bool(row.depositSkipped, '入金なしの状態');
+        if (row.kind !== 'saving') fail('INVALID_INPUT', '入金なしは積立だけに記録できます。');
+        if (row.depositSkipped && state.transfers.some(function (t) { return t.settingId === row.settingId && t.month === row.month && t.kind === 'deposit'; })) fail('CONFLICT', '入金実績がある月は入金なしにできません。');
+      }
     });
     var receiptLinks = new Map();
     state.receipts.forEach(function (row) {
@@ -400,6 +405,23 @@ var HouseholdDomain = (function () {
     if (own(p, 'memo')) plan.memo = text(p.memo, 'メモ', false);
     return plan;
   }
+  function setDepositSkipped(state, p, context) {
+    var target = month(p.month), setting = byId(state.settings, p.settingId, '積立設定');
+    var skipped = bool(p.skipped, '入金なしの状態');
+    if (setting.kind !== 'saving') fail('INVALID_INPUT', '入金なしは積立だけに記録できます。');
+    if (skipped && state.transfers.some(function (t) { return t.settingId === setting.id && t.month === target && t.kind === 'deposit'; })) fail('CONFLICT', '入金実績がある月は入金なしにできません。');
+    var plan = state.plans.find(function (row) { return row.month === target && row.settingId === setting.id; });
+    if (!plan) {
+      if (!skipped) return { settingId: setting.id, month: target, depositSkipped: false };
+      // A decision can be recorded for a month with no snapshot, without inventing a past budget.
+      plan = { id: newId(state.plans, {}, context), month: target, settingId: setting.id,
+        kind: 'saving', name: setting.name, plannedAmount: 0, paymentMethod: setting.paymentMethod, category: settingCategory('saving'), memo: '' };
+      state.plans.push(plan);
+    }
+    if (skipped) plan.depositSkipped = true;
+    else delete plan.depositSkipped;
+    return plan;
+  }
   function upsertExpense(state, p, context) {
     var old = p.id ? state.expenses.find(function (row) { return row.id === p.id; }) : undefined;
     if (old && old.deleted) fail('CONFLICT', '削除した明細は復活できません。新しい明細として登録してください。');
@@ -493,6 +515,10 @@ var HouseholdDomain = (function () {
     };
     var expenseId = optionalId(value(p, old, 'expenseId', undefined), '購入明細ID');
     if (expenseId) row.expenseId = expenseId;
+    if (row.kind === 'deposit') {
+      var plan = state.plans.find(function (p) { return p.settingId === row.settingId && p.month === row.month; });
+      if (plan) delete plan.depositSkipped;
+    }
     return replace(state.transfers, row);
   }
   function deleteTransfer(state, p) {
@@ -635,6 +661,7 @@ var HouseholdDomain = (function () {
       case 'saveSetting': result = saveSetting(state, p, context); break;
       case 'materializeMonth': result = materializeMonth(state, p, context); break;
       case 'savePlan': result = savePlan(state, p); break;
+      case 'setDepositSkipped': result = setDepositSkipped(state, p, context); break;
       case 'saveIncome': result = saveMonthly(state, p, context, 'incomes', 'amount', '給与'); break;
       case 'saveBill': result = saveMonthly(state, p, context, 'bills', 'confirmedAmount', '確定請求額'); break;
       case 'saveTransfer': result = saveTransfer(state, p, context); break;
@@ -727,6 +754,7 @@ var HouseholdDomain = (function () {
       return {
         settingId: setting.id, name: plan ? plan.name : setting.name, active: setting.active,
         planned: plan ? plan.plannedAmount : 0,
+        depositSkipped: Boolean(plan && plan.depositSkipped),
         deposited: sum(transfers.filter(function (transfer) { return transfer.settingId === setting.id && transfer.kind === 'deposit'; }), 'amount'),
         withdrawn: sum(transfers.filter(function (transfer) { return transfer.settingId === setting.id && transfer.kind === 'withdrawal'; }), 'amount'),
         pending: sum(pendingFunding.filter(function (entry) { return entry.settingId === setting.id; }), 'pending'),
