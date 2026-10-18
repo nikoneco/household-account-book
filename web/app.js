@@ -1,6 +1,6 @@
 import { createTransport, createDemoTransport } from './transport.js';
 import { SESSION_STORAGE_KEY, readSession, saveSession, clearSession } from './session.js';
-import { initUpdates } from './update.js?v=0.1.18';
+import { initUpdates } from './update.js?v=0.1.19';
 
 const D = globalThis.HouseholdDomain;
 const CATEGORIES = D.CATEGORIES.filter(category=>category!=='固定費');
@@ -63,7 +63,7 @@ function summary() {
 }
 function plannedDepositRow(item) {
   const currentMonth=month===today().slice(0,7), saved=item.planned>0&&item.deposited>=item.planned;
-  return `<div class="account-line saving-plan"><span>今月の積立予定</span><div class="saving-plan-actions"><strong>${yen(item.planned)}</strong><button type="button" class="quiet small" data-action="planned-deposit" data-id="${esc(item.settingId)}"${!currentMonth||item.planned<=0||saved?' disabled':''}>${saved?'入金済み':'この金額で入金'}</button></div></div>${!currentMonth?'<p class="hint">予定額での入金は今月の表示で使えます。実際の入金日を指定する場合は「入金・取り崩し」から記録してください。</p>':''}`;
+  return `<div class="account-line saving-plan"><span>今月の積立予定</span><div class="saving-plan-actions"><strong>${yen(item.planned)}</strong><button type="button" class="quiet small" data-action="planned-deposit" data-id="${esc(item.settingId)}"${item.planned<=0||saved?' disabled':''}>${saved?'入金済み':'この金額で入金'}</button></div></div>${!currentMonth?`<p class="hint">この月への入金は${esc(month)}-01付で記録します。</p>`:''}`;
 }
 function renderSavingsItem(item) {
   const paid=item.planned>0&&item.deposited>=item.planned;
@@ -271,10 +271,9 @@ function setBusy(value) {
   document.querySelectorAll('form button[type="submit"], [data-action="delete-expense"], [data-action="delete-transfer"], [data-action="delete-receipt"], [data-action="receipt-pending"], [data-action="close-reanalysis"], [data-action="toggle-setting"]').forEach(el=>el.disabled=value || !!pendingCommand);
   const plannedDeposits=document.querySelectorAll('[data-action="planned-deposit"]');
   const savingSummary=plannedDeposits.length?summary().savings:[];
-  const currentMonth=plannedDeposits.length?today().slice(0,7):'';
   plannedDeposits.forEach(el=>{
     const item=savingSummary.find(item=>item.settingId===el.dataset.id);
-    el.disabled=value||!!pendingCommand||month!==currentMonth||!item||item.planned<=0||item.deposited>=item.planned;
+    el.disabled=value||!!pendingCommand||!item||item.planned<=0||item.deposited>=item.planned;
   });
   document.querySelector('#retry').disabled=value;
   main.setAttribute('aria-busy',String(value));
@@ -420,8 +419,8 @@ document.addEventListener('click',async event=>{
   if(action==='close-detail'){closeDetail();return;}
   if(action==='toggle-income'){const panel=document.querySelector('#income-edit');panel.hidden=!panel.hidden;if(!panel.hidden)panel.querySelector('input').focus();}
   if(action==='planned-deposit'){
-    const date=today(),item=summary().savings.find(item=>item.settingId===id);
-    if(month!==date.slice(0,7)||!item||item.planned<=0||item.deposited>=item.planned)return;
+    const currentDate=today(),date=month===currentDate.slice(0,7)?currentDate:`${month}-01`,item=summary().savings.find(item=>item.settingId===id);
+    if(!item||item.planned<=0||item.deposited>=item.planned)return;
     const amount=item.planned,name=item.name;
     await mutate('saveTransfer',{id:crypto.randomUUID(),settingId:id,kind:'deposit',date,month:date.slice(0,7),amount,expenseId:'',memo:''},()=>{render();return `${name}に${yen(amount)}を入金しました（${date}）。`;});
   }

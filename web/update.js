@@ -1,5 +1,5 @@
 // Check public release metadata only; never clear sessions or reload without a click.
-export const APP_VERSION = '0.1.18';
+export const APP_VERSION = '0.1.19';
 export function initUpdates(environment = {}) {
   const win = environment.window || window;
   const doc = environment.document || document;
