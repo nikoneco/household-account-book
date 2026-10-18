@@ -1,6 +1,6 @@
 import { createTransport, createDemoTransport } from './transport.js';
 import { SESSION_STORAGE_KEY, readSession, saveSession, clearSession } from './session.js';
-import { initUpdates } from './update.js?v=0.1.21';
+import { initUpdates } from './update.js?v=0.1.22';
 
 const D = globalThis.HouseholdDomain;
 const CATEGORIES = D.CATEGORIES.filter(category=>category!=='固定費');
@@ -18,7 +18,7 @@ let month = today().slice(0,7), page = 'register', tab = 'receipt', state = null
 let busy = false, loginLoading = false, pendingCommand = null, pendingSuccess = null, editing = null, settingEdit = null, loginPreparation = null, googleClient = null;
 let transferPreset = null, imageUrl = null, imageRequest = 0, authEpoch = 0, sessionRole = 'editor';
 let receiptUploads = [];
-let restoreRetry = false;
+let restoreRetry = false, connectionRetry = false;
 const materialized = new Set();
 const list = key => (state?.[key] || []).filter(item => !['expenses','receipts'].includes(key) || !item.deleted);
 const canReanalyseReceipt = receipt => sessionRole==='editor' && !receipt.deleted && ['pending','needsReview'].includes(receipt.status) && !receipt.expenseIds.length;
@@ -47,14 +47,15 @@ function formEnd(label='保存する',cancel='') { return `</div><div class="for
 
 function renderAuth() {
   closeReceiptReanalysis(true);closeDetail();
+  const retry = restoreRetry || connectionRetry;
   document.querySelector('#navigation').hidden = true;
-  document.querySelector('#logout').hidden = !loginLoading && !restoreRetry;
+  document.querySelector('#logout').hidden = !loginLoading && !retry;
   main.setAttribute('aria-busy',String(loginLoading));
   if(loginLoading){
     main.innerHTML='<section class="panel auth-panel"><h1>読み込み中</h1><p class="muted" role="status">家計簿を読み込んでいます…</p></section>';
     return;
   }
-  main.innerHTML = `<section class="panel auth-panel"><h1>${restoreRetry?'再接続':'ログイン'}</h1><p class="muted">${restoreRetry?'ログイン情報は保持しています。通信を確認して再試行できます。':'Googleアカウントでログインしてください。'}</p>${restoreRetry?'<button id="restore-retry">読み込みを再試行</button>':''}${config ? `<button id="google-login" ${!googleClient ? 'disabled' : ''}>${googleClient ? 'Googleでログイン' : 'ログインを準備しています…'}</button>` : `<p class="notice">Google連携の準備が必要です。接続設定後にログインできます。</p>`}<div class="separator"><button id="demo-login" class="quiet">サンプルで試す</button><p class="hint">サンプルの入力は保存されず、終了すると消えます。</p></div></section>`;
+  main.innerHTML = `<section class="panel auth-panel"><h1>${retry?'再接続':'ログイン'}</h1><p class="muted">${connectionRetry?'家計簿との接続を準備できませんでした。接続を再試行してください。':restoreRetry?'ログイン情報は保持しています。通信を確認して再試行できます。':'Googleアカウントでログインしてください。'}</p>${retry?`<button id="restore-retry">${connectionRetry?'接続を再試行':'読み込みを再試行'}</button>`:''}${config ? `<button id="google-login" ${!googleClient || connectionRetry ? 'disabled' : ''}>${googleClient ? 'Googleでログイン' : 'ログインを準備しています…'}</button>` : `<p class="notice">Google連携の準備が必要です。接続設定後にログインできます。</p>`}<div class="separator"><button id="demo-login" class="quiet">サンプルで試す</button><p class="hint">サンプルの入力は保存されず、終了すると消えます。</p></div></section>`;
 }
 
 function summary() {
@@ -413,7 +414,7 @@ document.addEventListener('click',async event=>{
   }
   if(btn.id==='restore-retry'){authEpoch++;transport?.close?.();clearMessages();await initializeConfig();return;}
   if(btn.id==='google-login'){
-    if(!googleClient||loginLoading)return;
+    if(!googleClient||loginLoading||connectionRetry)return;
     // Start the server challenge alongside the popup, retaining the click's user gesture.
     loginPreparation=prepareLogin(transport);
     loginLoading=true;clearMessages();
@@ -547,7 +548,7 @@ async function showImage(id,trigger) {
 async function logout() {
   receiptUploads=[];
   clearSession();authEpoch++;closeImage();const previous=transport;
-  state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='register';tab='receipt';busy=false;loginLoading=false;sessionRole='editor';restoreRetry=false;loginPreparation=null;
+  state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='register';tab='receipt';busy=false;loginLoading=false;sessionRole='editor';restoreRetry=false;connectionRetry=false;loginPreparation=null;
   main.replaceChildren();document.querySelector('#pending').hidden=true;document.querySelector('#mode-note').hidden=true;clearMessages();
   transport=null;renderAuth();
   // Clear the UI/storage immediately even if the revocation request is slow/offline.
@@ -575,7 +576,7 @@ function prepareLogin(loginTransport) {
 }
 async function initializeConfig() {
   const epoch=authEpoch;
-  config=null;googleClient=null;loginPreparation=null;loginLoading=false;restoreRetry=false;
+  config=null;googleClient=null;loginPreparation=null;loginLoading=false;restoreRetry=false;connectionRetry=false;
   let nextConfig=null;
   try{const response=await fetch('./runtime-config.json',{cache:'no-store'});if(response.ok)nextConfig=await response.json();}catch{}
   if(epoch!==authEpoch)return;
@@ -593,6 +594,7 @@ async function initializeConfig() {
       if(epoch!==authEpoch)return;
       if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code))clearSession();
       else restoreRetry=true;
+      connectionRetry=error.code==='CONNECTION';
       message(error.message||'家計簿を読み込めませんでした。通信を確認して再読み込みしてください。',true);
     }finally{if(epoch===authEpoch)loginLoading=false;}
     if(epoch!==authEpoch||state)return;
@@ -619,10 +621,10 @@ async function initializeConfig() {
           loginResult=await loginTransport.login(result.code,preparation.state);
         }
         if(epoch!==authEpoch)return;
-        sessionRole=loginResult.role||'editor';restoreRetry=false;
+        sessionRole=loginResult.role||'editor';restoreRetry=false;connectionRetry=false;
         const savedResult=saveSession(loginConfig,loginResult);await loadSession();if(epoch===authEpoch)sessionSaveNotice(savedResult);
       }
-      catch(error){if(epoch!==authEpoch)return;if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code))clearSession();else restoreRetry=!!readSession(loginConfig);message(error.message||'ログインできませんでした。',true);}
+      catch(error){if(epoch!==authEpoch)return;if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code))clearSession();else restoreRetry=!!readSession(loginConfig);connectionRetry=error.code==='CONNECTION';message(error.message||'ログインできませんでした。',true);}
       finally{if(epoch===authEpoch){loginLoading=false;if(!state)renderAuth();}}
     },error_callback:()=>{if(epoch!==authEpoch)return;loginLoading=false;loginPreparation=null;renderAuth();message('ログイン画面が閉じられました。もう一度ログインできます。',true);}});
     renderAuth();

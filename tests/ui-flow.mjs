@@ -30,7 +30,7 @@ await page.route('**/web/transport.js',route=>route.fulfill({contentType:'text/j
 // Expose integration entry points only in this intercepted test copy, never production source.
 let appSource=(await readFile(new URL('../web/app.js',import.meta.url),'utf8')).replace(/\r\n/g,'\n');
 appSource=appSource.replace('\nawait initializeConfig();\n','\nglobalThis.__householdTest={transport:()=>transport,refresh:async()=>{state=await transport.load();render();}};\nawait initializeConfig();\n');
-await page.route('**/web/app.js',route=>route.fulfill({contentType:'text/javascript',body:appSource}));
+await page.route('**/web/app.js*',route=>route.fulfill({contentType:'text/javascript',body:appSource}));
 const importFixture=payload=>page.evaluate(async input=>{
   const harness=globalThis.__householdTest,transport=harness.transport(),current=await transport.load();
   await transport.mutate({type:'importReceipt',payload:input,operationId:crypto.randomUUID(),expectedRevision:current.revision});
@@ -265,6 +265,7 @@ try {
   await page.getByText('確認待ち',{exact:true}).waitFor();
   await page.getByText('レシート合計と明細の合計が一致しません。',{exact:false}).waitFor();
   await importFixture(imported);
+  await page.locator('#imported-receipts>summary').click();
   await page.getByText('取込済み',{exact:true}).waitFor();
   await page.getByText('購入日：2026-10-04',{exact:false}).waitFor();
   await page.getByText('保存日時：',{exact:false}).waitFor();

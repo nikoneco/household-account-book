@@ -408,3 +408,14 @@ Pages e0495c8d built、14公開アセットが配信Git blob/ビルド内容と�
 169/169 tests、check、build、diff-check、skipped-deposit/custom-deposit/planned-deposit UI成功。新規Domainテストで月・項目の分離、予定/残高維持、取消、不正bool/固定費/不正月/既入金の拒否、計画なし過去月0円、失敗時の保持と実入金時の自動解除を確認。サーバー模擬では書込前/書込後応答喪失、同一操作の再試行1件、認証後loadでの状態保持、設定と移動の不変を確認。テストの操作履歴はクライアント配信で除外する既存仕様に合わせてサーバー保存状態で検証し、VM境界の比較はJSON正規化した。UIは閉じた印・画面移動・別月・取消・0円予定・計画なし過去月・手動入金後の解除・押下抑止・閲覧者・結果不明時の月切替拒否と同一ID再試行、320/375/390/768/1280pxを確認。Browser plugin not availableのため既存Playwright/Chromeを利用。独立エージェントレビューは未実施、本番の試験記録は行わない。
 
 GAS草稿/公開v19を退避しDomainだけを同じデプロイのv20へ更新。公開4ソースを読み戻し一致し、他3ソース・endpoint・accessを維持。Pages 11705fe3 built、14公開アセットが配信Git blob/ビルド内容と一致、SW household-shell-v0.1.21。公開の未改変サンプルをChrome 1280×900/390×844で操作し、閉じた印・画面移動後の保持・別月への非継承・取消後の入金ボタン復帰・予定5,000円/残高100円/給与残額0円の維持・0円移動明細なし・横溢れなし・アプリ例外0件を確認。Google GISの起動時inline-style CSP通知1件とテスト設定のSWブロック警告は今回の操作と分けて記録。GoogleへのPOSTは初期化wardeninitのみ観測し、家計変更RPCはなし。証跡Temp/household-skipped-deposit-publicのproof.jsonと3画像。スマホ実機、認証済み本番での実際の印付け、別端末での読込は未確認。永続化/認証後再読込はサーバー模擬テストで確認済み。
+
+
+## 2026-10-18 Google CookieからのGAS通信分離（0.1.22）
+
+通常Chrome/PWAでGAS接続が302から /macros/u/1/ の404へ転送され、準備完了通知が届かず45秒後にCONNECTIONとなる事象をユーザーのNetwork記録で確認。普段のGoogle Cookieを通信ブリッジへ持ち込まないため、対応ブラウザーのiframe.credentiallessをsrc設定前に有効化した。親画面のGoogleログイン、保存済み30日セッション、origin/channel/source照合、サーバー認証、GAS/台帳構造は維持。非対応ブラウザーは従来接続。接続準備に失敗した場合は、ログイン前でも「接続を再試行」でブリッジを作り直す。失敗済み接続を使うGoogleログインボタンは再接続まで無効。
+
+169/169 tests、check、build、diff-check、login-ui成功。bridge-cookie-uiは本物のloopback HTTPとChrome 155で、検証Cookieありの通常接続302→404、分離接続ではCookie非送信・200・ログイン・再読み込み時のbootstrap復元・ログアウト、初回404後の再接続、親Cookie維持、機能非対応の模擬環境での従来接続を確認。390/1280pxの画面画像とアプリ例外0件。Playwrightのリクエスト介入時のCookie表示だけでは実送信を証明できないため、HTTPサーバーで受信ヘッダーを確認した。ui-flowの版番号付きapp.jsへのルート一致と、既存の取込済みアコーディオンの展開を修正し、入力・保存結果不明からの再試行・明細・レシート・ログアウト・モバイル/デスクトップの一連操作も成功。Browser plugin not availableのため既存Playwright/Chromeを使用。独立エージェントレビューは未実施。証跡はリポジトリ外Temp/household-cookie-isolation。
+
+公開前に既存のruntime-configと接続先維持を照合し、配信候補の変更がindex.html/sw.js/web/app.js/web/transport.js/web/update.jsの5ファイルだけであることを確認。家計データへの試験入力・Google Cookieの取得や再利用は行わない。
+
+Pages 8186b392を既存gh-pagesへ公開し、Actions 39120108915のbuild/report-build-status/deployの各ジョブ成功と、14公開アセットが配信Git blobおよび改行正規化したビルド内容に一致することを確認。SW household-shell-v0.1.22。未改変の公開ページをChrome 155で開き、iframe.credentialless=true、GAS接続の200応答・404なし、作成した無効セッションでのsessionInfo RPCがAUTH_REQUIREDとなることを確認（認証拒否前に家計データは要求しない）。Googleログイン画面→サンプル→ホーム→レシートを1280/390pxで操作し、横溢れなし・アプリ例外0件・既知のGoogle GIS inline-style CSP通知1件以外のコンソール通知なし。ソースや通信の差替えなし。証跡はTemp/household-cookie-isolation-public/proof.jsonと3画像。GAS/家計データ/Google設定の変更なし。奥さんのPCの通常PWAでの実ログイン、物理スマホと非Chromiumブラウザーでの実機動作は未確認。
