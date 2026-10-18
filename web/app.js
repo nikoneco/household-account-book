@@ -1,6 +1,6 @@
 import { createTransport, createDemoTransport } from './transport.js';
 import { SESSION_STORAGE_KEY, readSession, saveSession, clearSession } from './session.js';
-import { initUpdates } from './update.js?v=0.1.19';
+import { initUpdates } from './update.js?v=0.1.20';
 
 const D = globalThis.HouseholdDomain;
 const CATEGORIES = D.CATEGORIES.filter(category=>category!=='固定費');
@@ -61,9 +61,16 @@ function summary() {
   if (D?.summarize) return D.summarize(state,month);
   throw new Error('集計機能を読み込めませんでした。ページを再読み込みしてください。');
 }
+function savingsDepositDate() {
+  const date=today();return month===date.slice(0,7)?date:`${month}-01`;
+}
+async function depositSavings(item,amount,date) {
+  const name=item.name;
+  await mutate('saveTransfer',{id:crypto.randomUUID(),settingId:item.settingId,kind:'deposit',date,month:date.slice(0,7),amount,expenseId:'',memo:''},()=>{render();return `${name}に${yen(amount)}を入金しました（${date}）。`;});
+}
 function plannedDepositRow(item) {
   const currentMonth=month===today().slice(0,7), saved=item.planned>0&&item.deposited>=item.planned;
-  return `<div class="account-line saving-plan"><span>今月の積立予定</span><div class="saving-plan-actions"><strong>${yen(item.planned)}</strong><button type="button" class="quiet small" data-action="planned-deposit" data-id="${esc(item.settingId)}"${item.planned<=0||saved?' disabled':''}>${saved?'入金済み':'この金額で入金'}</button></div></div>${!currentMonth?`<p class="hint">この月への入金は${esc(month)}-01付で記録します。</p>`:''}`;
+  return `<div class="account-line saving-plan"><span>今月の積立予定</span><div class="saving-plan-actions"><strong>${yen(item.planned)}</strong><button type="button" class="quiet small" data-action="planned-deposit" data-id="${esc(item.settingId)}"${item.planned<=0||saved?' disabled':''}>${saved?'入金済み':'この金額で入金'}</button></div></div>${!currentMonth?`<p class="hint">この月への入金は${esc(month)}-01付で記録します。</p>`:''}<div class="saving-custom-actions"><button type="button" class="quiet small" data-action="custom-deposit" data-id="${esc(item.settingId)}" aria-expanded="false">金額を変更して入金</button></div><form class="custom-deposit-form inline-edit" data-setting-id="${esc(item.settingId)}" hidden><p class="hint">入金実績を1件追加します。毎月の予定額は変わりません。</p>${field('amount','入金額（円）',item.planned||'','number','min="1" max="9007199254740991" step="1" inputmode="numeric" required')}<input type="hidden" name="date"><p class="hint">入金日：<span data-deposit-date></span></p><div class="form-actions"><button type="submit">入金する</button>${button('cancel-custom-deposit','キャンセル')}</div></form>`;
 }
 function renderSavingsItem(item) {
   const paid=item.planned>0&&item.deposited>=item.planned;
@@ -257,7 +264,7 @@ function render() {
   main.innerHTML=page==='home'?renderHome():page==='register'?renderRegister():page==='history'?renderHistory():renderSettings();
   if(sessionRole==='viewer'){
     if(page==='register')main.innerHTML=heading('閲覧のみ','このアカウントでは記録の確認ができます。')+'<section class="panel"><p>支出や積立の変更は、編集できるアカウントでログインしてください。</p></section>';
-    main.querySelectorAll('form,[data-action="toggle-income"],[data-action="go-transfer"],[data-action="planned-deposit"],[data-action="funded-withdraw"],[data-action="edit-expense"],[data-action="delete-expense"],[data-action="delete-transfer"],[data-action="edit-setting"],[data-action="toggle-setting"]').forEach(el=>el.hidden=true);
+    main.querySelectorAll('form,[data-action="toggle-income"],[data-action="go-transfer"],[data-action="planned-deposit"],[data-action="custom-deposit"],[data-action="funded-withdraw"],[data-action="edit-expense"],[data-action="delete-expense"],[data-action="delete-transfer"],[data-action="edit-setting"],[data-action="toggle-setting"]').forEach(el=>el.hidden=true);
     document.querySelector('#mode-note').hidden=false;document.querySelector('#mode-note').textContent='閲覧のみ';
   }
   document.querySelectorAll('[data-page]').forEach(el=>{if(el.dataset.page===page)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
@@ -268,7 +275,8 @@ function render() {
 }
 function setBusy(value) {
   busy=value;
-  document.querySelectorAll('form button[type="submit"], [data-action="delete-expense"], [data-action="delete-transfer"], [data-action="delete-receipt"], [data-action="receipt-pending"], [data-action="close-reanalysis"], [data-action="toggle-setting"]').forEach(el=>el.disabled=value || !!pendingCommand);
+  document.querySelectorAll('form button[type="submit"], [data-action="delete-expense"], [data-action="delete-transfer"], [data-action="delete-receipt"], [data-action="receipt-pending"], [data-action="close-reanalysis"], [data-action="toggle-setting"], [data-action="custom-deposit"], [data-action="cancel-custom-deposit"]').forEach(el=>el.disabled=value || !!pendingCommand);
+  document.querySelectorAll('.custom-deposit-form [name="amount"]').forEach(el=>el.readOnly=value||!!pendingCommand);
   const plannedDeposits=document.querySelectorAll('[data-action="planned-deposit"]');
   const savingSummary=plannedDeposits.length?summary().savings:[];
   plannedDeposits.forEach(el=>{
@@ -341,7 +349,10 @@ document.addEventListener('submit',async event=>{
     await mutate('upsertExpense',payload,()=>{editing=null;render();if(payload.accountingMonth!==month)return `保存しました。計上月は${monthLabel(payload.accountingMonth)}です。`;});
   } else if(form.id==='income-form')await mutate('saveIncome',{month,amount:num(p.amount)});
   else if(form.id==='bill-form')await mutate('saveBill',{month,confirmedAmount:num(p.confirmedAmount),memo:p.memo});
-  else if(form.id==='transfer-form'){
+  else if(form.matches('.custom-deposit-form')){
+    const item=summary().savings.find(item=>item.settingId===form.dataset.settingId);
+    if(item)await depositSavings(item,num(p.amount),p.date);
+  } else if(form.id==='transfer-form'){
     if(p.kind==='deposit')p.expenseId='';
     await mutate('saveTransfer',{...p,id:crypto.randomUUID(),month:p.date.slice(0,7),amount:num(p.amount)},()=>{transferPreset=null;render();});
   } else if(form.id==='setting-form'){
@@ -419,10 +430,19 @@ document.addEventListener('click',async event=>{
   if(action==='close-detail'){closeDetail();return;}
   if(action==='toggle-income'){const panel=document.querySelector('#income-edit');panel.hidden=!panel.hidden;if(!panel.hidden)panel.querySelector('input').focus();}
   if(action==='planned-deposit'){
-    const currentDate=today(),date=month===currentDate.slice(0,7)?currentDate:`${month}-01`,item=summary().savings.find(item=>item.settingId===id);
+    const item=summary().savings.find(item=>item.settingId===id);
     if(!item||item.planned<=0||item.deposited>=item.planned)return;
-    const amount=item.planned,name=item.name;
-    await mutate('saveTransfer',{id:crypto.randomUUID(),settingId:id,kind:'deposit',date,month:date.slice(0,7),amount,expenseId:'',memo:''},()=>{render();return `${name}に${yen(amount)}を入金しました（${date}）。`;});
+    await depositSavings(item,item.planned,savingsDepositDate());
+  }
+  if(action==='custom-deposit'){
+    if(sessionRole==='viewer')return;
+    const form=btn.closest('.saving-row').querySelector('.custom-deposit-form');
+    form.hidden=!form.hidden;btn.setAttribute('aria-expanded',String(!form.hidden));
+    if(!form.hidden){form.reset();const date=savingsDepositDate();form.elements.date.value=date;form.querySelector('[data-deposit-date]').textContent=date;form.elements.amount.focus();form.elements.amount.select();}
+  }
+  if(action==='cancel-custom-deposit'){
+    const form=btn.closest('.custom-deposit-form'),opener=form.closest('.saving-row').querySelector('[data-action="custom-deposit"]');
+    form.hidden=true;opener.setAttribute('aria-expanded','false');opener.focus();
   }
   if(action==='go-transfer'){tab='transfer';switchPage('register');}
   if(action==='edit-expense'){closeDetail();editing={...list('expenses').find(e=>e.id===id)};tab='expense';switchPage('register');}
