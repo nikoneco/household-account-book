@@ -1,6 +1,6 @@
-/* Cache the public shell only. Household data and runtime configuration stay online. */
-const CACHE = 'household-shell-v0.1.22';
-const SHELL = ['./', './?v=0.1.22', './index.html', './index.html?v=0.1.22', './web/style.css?v=0.1.22', './web/app.js?v=0.1.22', './web/update.js?v=0.1.22', './web/transport.js', './web/session.js', './shared/domain.js?v=0.1.22', './manifest.webmanifest', './assets/icon.svg', './assets/icon-192.png', './assets/icon-512.png', './assets/apple-touch-icon.png'];
+/* Cache the public shell only. Private responses and runtime configuration bypass this worker. */
+const CACHE = 'household-shell-v0.1.23';
+const SHELL = ['./', './?v=0.1.23', './index.html', './index.html?v=0.1.23', './web/style.css?v=0.1.23', './web/app.js?v=0.1.23', './web/update.js?v=0.1.23', './web/transport.js', './web/session.js', './web/startup-snapshot.js', './shared/domain.js?v=0.1.23', './manifest.webmanifest', './assets/icon.svg', './assets/icon-192.png', './assets/icon-512.png', './assets/apple-touch-icon.png'];
 const SHELL_URLS = new Set(SHELL.map(path => new URL(path, self.registration.scope).href));
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL.map(path => new Request(new URL(path, self.registration.scope), {cache: 'reload'}))))));
 self.addEventListener('activate', event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith('household-shell-') && key !== CACHE).map(key => caches.delete(key))))));

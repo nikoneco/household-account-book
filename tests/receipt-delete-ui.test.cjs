@@ -11,11 +11,12 @@ const { webcrypto } = require('node:crypto');
 function app(receipts, role = 'editor') {
   const listeners = {}, nodes = new Map(), commands = [];
   const node = id => {
-    if (!nodes.has(id)) nodes.set(id, { hidden: true, textContent: '', disabled: false, setAttribute() {} });
+    if (!nodes.has(id)) nodes.set(id, { hidden: true, textContent: '', disabled: false, dataset:{}, setAttribute() {}, before() {}, querySelectorAll:()=>[] });
     return nodes.get(id);
   };
   const context = vm.createContext({ crypto: webcrypto, Intl, console, initUpdates() {},
-    document: { querySelector: node, querySelectorAll: () => [], addEventListener: (type, handler) => { listeners[type] = handler; } },
+    validSession:value=>value?.session==='a'.repeat(64)&&value.expiresAt>Date.now(),
+    document: { createElement:()=>node('sync-notice'), querySelector: node, querySelectorAll: () => [], addEventListener: (type, handler) => { listeners[type] = handler; } },
     window: { addEventListener() {} }, confirm: () => true, URL: { revokeObjectURL() {} }
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../shared/domain.js'), 'utf8'), context);
@@ -23,7 +24,7 @@ function app(receipts, role = 'editor') {
     .replace(/^import .*;\r?\n/gm, '').replace(/^await initializeConfig\(\);$/m, '').replace("if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});", '');
   vm.runInContext(source, context);
   context.receipts = receipts; context.role = role;
-  vm.runInContext(`state={...D.emptyState(),receipts};globalThis.serverState=JSON.parse(JSON.stringify(state));sessionRole=role;render=()=>{globalThis.rendered=renderReceipts();};updateReceiptUploads=()=>{};`, context);
+  vm.runInContext(`state={...D.emptyState(),receipts};globalThis.serverState=JSON.parse(JSON.stringify(state));sessionRole=role;dataPhase='ready';activeSession={session:'a'.repeat(64),expiresAt:Date.now()+100000};render=()=>{globalThis.rendered=renderReceipts();};updateReceiptUploads=()=>{};`, context);
   context.transportStub = { mutate: async command => {
     commands.push(JSON.parse(JSON.stringify(command)));
     const failure = context.failure; context.failure = null;
@@ -70,6 +71,15 @@ test('ambiguous delete response keeps the row until same-command retry succeeds'
   await a.click('', 'retry');
   assert.deepEqual(a.commands[1],a.commands[0]); assert.equal(a.node('#pending').hidden, true);
   assert.equal(a.state().receipts[0].deleted, true); assert.doesNotMatch(a.context.rendered, /one\.jpg/);
+});
+
+test('stale/loading/error data and expired sessions reject programmatic receipt deletion', async () => {
+ for(const phase of ['loading','refreshing','error']){
+  const a=app([receipt('one')]);a.context.phase=phase;vm.runInContext('dataPhase=phase;',a.context);
+  await a.click('one');assert.equal(a.commands.length,0,phase);assert.equal(a.state().receipts[0].deleted,undefined);
+ }
+ const expired=app([receipt('one')]);vm.runInContext('activeSession.expiresAt=1;',expired.context);
+ await expired.click('one');assert.equal(expired.commands.length,0);
 });
 
 for (const commitBeforeFailure of [false, true]) test(`SAVE_FAILED ${commitBeforeFailure?'after committed delete':'before commit'} preserves the operation for durable retry`, async () => {

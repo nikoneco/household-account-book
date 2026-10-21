@@ -3,7 +3,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import {execFileSync} from 'node:child_process';
 const root=path.resolve(import.meta.dirname,'..');
-for (const item of ['web/app.js','web/transport.js','sw.js','tools/dev-server.mjs','tools/build.mjs']) execFileSync(process.execPath,['--check',path.join(root,item)]);
+for (const item of ['web/app.js','web/transport.js','web/startup-snapshot.js','sw.js','tools/dev-server.mjs','tools/build.mjs']) execFileSync(process.execPath,['--check',path.join(root,item)]);
 for (const item of ['shared/domain.js','gas/Server.gs']) new vm.Script(await readFile(path.join(root,item),'utf8'),{filename:item});
 JSON.parse(await readFile(path.join(root,'manifest.webmanifest'),'utf8'));
 JSON.parse(await readFile(path.join(root,'gas/appsscript.json'),'utf8'));

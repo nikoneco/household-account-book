@@ -66,6 +66,8 @@ try{
  assert.equal(await page.getByRole('heading',{name:'読み込み中'}).count(),0);
  await page.getByRole('button',{name:'ホーム',exact:true}).click();
  await page.getByText('今月の残り',{exact:true}).waitFor();
+ // This suite keeps the no-snapshot loading path; startup-snapshot-ui covers preview.
+ await page.evaluate(()=>localStorage.removeItem('household.startup-snapshot.v1'));
  await page.reload();
  await stage('restore');await loading();assert.equal(await page.locator('#navigation').isVisible(),false);
  await resolve();

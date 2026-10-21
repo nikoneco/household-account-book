@@ -80,7 +80,7 @@ async function fixture({cookie=true,legacy=false,unsupported=false,width=390}={}
  await page.getByRole('button',{name:'Googleでログイン',exact:true}).waitFor();
  return {page,context};
 }
-async function registered(page){await page.getByRole('tab',{name:'レシート',exact:true}).waitFor();assert.equal(await page.locator('#navigation').isVisible(),true);}
+async function registered(page){await page.getByRole('tab',{name:'レシート',exact:true}).waitFor();await page.waitForFunction(()=>document.querySelector('#data-sync')?.dataset.status==='fresh');assert.equal(await page.locator('#navigation').isVisible(),true);}
 try{
  // Control: the same synthetic profile cookie sends the normal bridge to 404.
  let h=await fixture({legacy:true});await h.page.getByRole('button',{name:'Googleでログイン',exact:true}).click();
@@ -90,15 +90,16 @@ try{
  h=await fixture();assert.equal(await h.page.locator('iframe[title="家計簿の安全な接続"]').evaluate(f=>f.credentialless),true);
  await h.page.getByRole('button',{name:'Googleでログイン',exact:true}).click();await registered(h.page);
  assert.equal(await h.page.evaluate(()=>document.cookie.includes('routing_fixture=')),true);
+ await h.page.waitForFunction(()=>localStorage.getItem('household.startup-snapshot.v1')!==null);
  const before=loginCount();await h.page.reload();await registered(h.page);assert.equal(loginCount(),before);
  assert.ok(calls.some(r=>r.operation==='bootstrap'));
  assert.ok(requests.slice(start).every(r=>!r.cookieSent&&r.status===200));
  // A failed restore retains the existing token and reconnects without a popup.
  const saved=await h.page.evaluate(()=>localStorage.getItem('household.session.v1'));
  failNextBridge=true;await h.page.reload();
- await h.page.getByRole('button',{name:'接続を再試行',exact:true}).waitFor();
+ await h.page.locator('#snapshot-retry').waitFor();
  assert.equal(await h.page.evaluate(()=>localStorage.getItem('household.session.v1')),saved);
- await h.page.getByRole('button',{name:'接続を再試行',exact:true}).click();await registered(h.page);
+ await h.page.locator('#snapshot-retry').click();await registered(h.page);
  assert.equal(loginCount(),before);
  await h.page.screenshot({path:path.join(out,'01-isolated-login-mobile.png')});
  await h.page.setViewportSize({width:1280,height:900});await h.page.screenshot({path:path.join(out,'02-restored-desktop.png')});
