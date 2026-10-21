@@ -1,7 +1,7 @@
 import { createTransport, createDemoTransport } from './transport.js';
 import { SESSION_STORAGE_KEY, validSession, readSession, saveSession, clearSession } from './session.js';
 import { readSnapshot, saveSnapshot, clearSnapshot, displayState } from './startup-snapshot.js';
-import { initUpdates } from './update.js?v=0.1.23';
+import { initUpdates } from './update.js?v=0.1.24';
 
 const D = globalThis.HouseholdDomain;
 const CATEGORIES = D.CATEGORIES.filter(category=>category!=='固定費');
@@ -49,6 +49,15 @@ function updateSyncNotice() {
   syncNotice.dataset.status=dataPhase==='ready'?'fresh':dataPhase;
   syncNotice.hidden=!state || transport?.isDemo || dataPhase==='ready';
   syncNotice.innerHTML=dataPhase==='error'?'<span>最新情報を確認できませんでした。保存した情報を閲覧中です。</span><button id="snapshot-retry" type="button" class="quiet small">再試行</button>':'<span>最新情報を確認中 · 保存した情報を表示しています</span>';
+}
+function updateReceiptReviewNotice() {
+  const info=document.querySelector('#receipt-review-info');if(!info)return;
+  const count=list('receipts').filter(receipt=>receipt.status==='needsReview').length;
+  info.hidden=!state||count===0;
+  if(info.hidden)return;
+  document.querySelector('#receipt-review-text').textContent=`${dataPhase==='ready'?'':'前回の情報では、'}確認待ちのレシート：${count}件`;
+  const opener=document.querySelector('#receipt-review-open');
+  opener.hidden=sessionRole==='viewer';opener.disabled=busy||!!pendingCommand;
 }
 function refreshEditModels(latest) {
   // Models can outlive their form when navigating to another page/tab. Keep
@@ -101,6 +110,7 @@ function formEnd(label='保存する',cancel='') { return `</div><div class="for
 function renderAuth() {
   closeReceiptReanalysis(true);closeDetail();
   updateSyncNotice();
+  updateReceiptReviewNotice();
   const retry = restoreRetry || connectionRetry;
   document.querySelector('#navigation').hidden = true;
   document.querySelector('#logout').hidden = !loginLoading && !retry;
@@ -219,7 +229,7 @@ function updateReceiptUploads() {
 function renderReceipts() {
   const receipts=list('receipts').slice().reverse();
   if(!receipts.length)return '<div class="empty">保存したレシートは、ここに並びます。</div>';
-  const rows=items=>items.map(r=>`<article class="receipt-row"><div class="row-head"><h3>${esc(r.fileName||'レシート')}</h3><span class="pill receipt-${esc(r.status)} ${r.status==='needsReview'?'review':''}">${{pending:'解析待ち',needsReview:'確認待ち',imported:'取込済み',failed:'保存失敗'}[r.status]||esc(r.status)}</span></div><p class="muted">購入日：${esc(r.purchaseDate||'未確認')}<br>保存日時：${esc(savedTime(r.uploadedAt))}</p>${r.reason?`<p class="muted">${esc(r.reason)}</p>`:''}${r.archiveStatus==='archived'?'<p class="hint">処理済フォルダへ移動済み</p>':r.archiveStatus==='failed'?`<p class="notice">${esc(r.archiveError||'画像を移動できませんでした。')}<br>次に家計簿を開くと、画像の移動だけ再試行します。</p>`:''}${button('receipt-image','画像を見る',r.id)}${canReanalyseReceipt(r)?button('receipt-pending',r.status==='pending'?'補足を追加':'再解析を依頼',r.id):''}${canDeleteReceipt(r)?button('delete-receipt','削除する',r.id,'quiet small negative'):''}</article>`).join('');
+  const rows=items=>items.map(r=>`<article class="receipt-row" data-receipt-status="${esc(r.status)}"><div class="row-head"><h3>${esc(r.fileName||'レシート')}</h3><span class="pill receipt-${esc(r.status)} ${r.status==='needsReview'?'review':''}">${{pending:'解析待ち',needsReview:'確認待ち',imported:'取込済み',failed:'保存失敗'}[r.status]||esc(r.status)}</span></div><p class="muted">購入日：${esc(r.purchaseDate||'未確認')}<br>保存日時：${esc(savedTime(r.uploadedAt))}</p>${r.reason?`<p class="muted">${esc(r.reason)}</p>`:''}${r.archiveStatus==='archived'?'<p class="hint">処理済フォルダへ移動済み</p>':r.archiveStatus==='failed'?`<p class="notice">${esc(r.archiveError||'画像を移動できませんでした。')}<br>次に家計簿を開くと、画像の移動だけ再試行します。</p>`:''}${button('receipt-image','画像を見る',r.id)}${canReanalyseReceipt(r)?button('receipt-pending',r.status==='pending'?'補足を追加':'再解析を依頼',r.id):''}${canDeleteReceipt(r)?button('delete-receipt','削除する',r.id,'quiet small negative'):''}</article>`).join('');
   const imported=receipts.filter(r=>r.status==='imported');
   const importedOpen=document.querySelector('#imported-receipts')?.open;
   return rows(receipts.filter(r=>r.status!=='imported'))+(imported.length?`<details id="imported-receipts" class="imported-receipts"${importedOpen?' open':''}><summary>取込済み（${imported.length}件）</summary>${rows(imported)}</details>`:'');
@@ -347,6 +357,7 @@ function render(preserveInteraction=false) {
 }
 function setBusy(value) {
   busy=value;
+  updateReceiptReviewNotice();
   document.querySelectorAll('form button[type="submit"], [data-action="delete-expense"], [data-action="delete-transfer"], [data-action="delete-receipt"], [data-action="receipt-pending"], [data-action="close-reanalysis"], [data-action="toggle-setting"], [data-action="custom-deposit"], [data-action="cancel-custom-deposit"], [data-action="toggle-deposit-skip"]').forEach(el=>el.disabled=value || !!pendingCommand);
   document.querySelectorAll('.custom-deposit-form [name="amount"]').forEach(el=>el.readOnly=value||!!pendingCommand);
   const plannedDeposits=document.querySelectorAll('[data-action="planned-deposit"]');
@@ -526,6 +537,14 @@ document.addEventListener('click',async event=>{
   if(btn.dataset.page){if(btn.dataset.page==='register'){tab='receipt';editing=null;transferPreset=null;}switchPage(btn.dataset.page);return;}
   if(btn.dataset.tab){tab=btn.dataset.tab;render();return;}
   const action=btn.dataset.action,id=btn.dataset.id;
+  if(action==='review-receipts'){
+    if(!state||sessionRole==='viewer'||!list('receipts').some(receipt=>receipt.status==='needsReview'))return;
+    tab='receipt';editing=null;transferPreset=null;switchPage('register');
+    document.querySelector('#saved-receipts').open=true;
+    const target=document.querySelector('.receipt-row[data-receipt-status="needsReview"]');
+    if(target){target.tabIndex=-1;target.focus({preventScroll:true});target.scrollIntoView({block:'start'});}
+    return;
+  }
   if(action==='receipt-camera'||action==='receipt-files'){document.querySelector(`#${action}`).click();return;}
   if(action==='receipt-clear'){receiptUploads=[];updateReceiptUploads();clearMessages();return;}
   if(action==='receipt-retry'){await uploadReceipts(true);return;}

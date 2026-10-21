@@ -156,3 +156,5 @@ input[type=date]::-webkit-datetime-edit,input[type=month]::-webkit-datetime-edit
 .data-sync{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px;padding:8px 12px;border-radius:8px;background:var(--pale);color:var(--muted);font-size:13px;line-height:1.5}
 .data-sync[hidden]{display:none}
 .data-sync button{flex-shrink:0;min-height:40px}
+.receipt-review-info{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-top:16px;padding:12px 14px;border:1px solid #cbdde5;border-radius:var(--radius);background:#eaf3f8;color:#24485d}
+.receipt-review-copy{display:flex;align-items:baseline;gap:10px;flex:1 1 190px;min-width:0;font-size:13px;line-height:1.6}.receipt-review-copy strong{font-weight:600}.receipt-review-label{flex:none;font-size:11px;font-weight:750;letter-spacing:.08em}.receipt-review-info button{flex:none;border-color:#b6cbd5;color:#24485d}

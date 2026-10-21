@@ -10,13 +10,14 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" type="image/svg+xml" href="./assets/icon.svg">
   <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
-  <link rel="stylesheet" href="./web/style.css?v=0.1.23">
-  <script defer src="./shared/domain.js?v=0.1.23"></script>
-  <script type="module" src="./web/app.js?v=0.1.23"></script>
+  <link rel="stylesheet" href="./web/style.css?v=0.1.24">
+  <script defer src="./shared/domain.js?v=0.1.24"></script>
+  <script type="module" src="./web/app.js?v=0.1.24"></script>
 </head>
 <body>
   <div class="app-shell">
     <header class="masthead"><a class="brand" href="./" aria-label="家計簿 ホーム">家計簿</a><button id="logout" class="quiet small" hidden>ログアウト</button></header>
+    <div id="receipt-review-info" class="receipt-review-info" role="status" aria-live="polite" hidden><div class="receipt-review-copy"><span class="receipt-review-label">INFO</span><strong id="receipt-review-text"></strong></div><button id="receipt-review-open" type="button" class="quiet small" data-action="review-receipts">確認する</button></div>
     <div id="app-update" class="app-update" role="status" hidden><div><strong>最新版があります</strong><p id="app-update-note">入力中の内容は保存してから更新してください。</p></div><button id="app-update-button" type="button" class="quiet">更新</button></div>
     <div id="mode-note" class="mode-note" hidden></div>
     <div id="message" class="message" role="status" aria-live="polite" hidden></div>

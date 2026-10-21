@@ -73,8 +73,14 @@ try {
     assert.equal(await page.getByRole('dialog').evaluate(el=>el.scrollWidth<=el.clientWidth),true);
   }
   await textarea.fill('競合後も残す補足');await page.evaluate(()=>{globalThis.__conflictReanalysis=true;});await click('補足を保存');
-  await page.locator('#receipt-reanalysis-error').getByText('最新情報を読み込みました。入力内容を確認して、もう一度保存してください。',{exact:true}).waitFor();
+  await page.locator('#receipt-reanalysis-error').getByText('入力中の記録が別の場所で変更されました。入力は残しています。最新の記録を開き直してから保存してください。',{exact:true}).waitFor();
   assert.equal(await textarea.inputValue(),'競合後も残す補足');assert.equal(await textarea.evaluate(el=>el.readOnly),false);
+  assert.equal(await page.locator('#receipt-reanalysis-form button[type=submit]').isEnabled(),false);
+  const guardedAttempts=(await requests()).length;
+  await page.dispatchEvent('#receipt-reanalysis-form','submit');assert.equal((await requests()).length,guardedAttempts);
+  const draft=await textarea.inputValue();await click('キャンセル');
+  await page.locator('.receipt-row').filter({hasText:'review.jpg'}).getByRole('button',{name:'補足を追加'}).click();
+  await page.getByRole('dialog').getByText('別端末からの補足',{exact:true}).waitFor();await textarea.fill(draft);
   await click('補足を保存');await page.getByRole('dialog').waitFor({state:'detached'});
   record=await page.evaluate(()=>globalThis.__storedState.receipts.find(r=>r.id==='review'));assert.equal(record.analysisNotes.length,4);assert.equal(record.analysisNotes.at(-1).memo,'競合後も残す補足');
   await page.locator('.receipt-row').filter({hasText:'review.jpg'}).getByRole('button',{name:'補足を追加'}).click();
