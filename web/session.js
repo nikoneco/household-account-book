@@ -1,4 +1,5 @@
-// Only the opaque app session is retained. Ledger/OAuth data stays in memory.
+// Only the opaque app session is retained here. Display snapshots use a separate
+// bounded cache; OAuth credentials are never retained by either module.
 export const SESSION_STORAGE_KEY = 'household.session.v1';
 const MAX_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 // Local filtering tolerates clock skew; the server still enforces its original expiry.

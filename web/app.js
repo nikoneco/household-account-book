@@ -1,6 +1,7 @@
 import { createTransport, createDemoTransport } from './transport.js';
-import { SESSION_STORAGE_KEY, readSession, saveSession, clearSession } from './session.js';
-import { initUpdates } from './update.js?v=0.1.22';
+import { SESSION_STORAGE_KEY, validSession, readSession, saveSession, clearSession } from './session.js';
+import { readSnapshot, saveSnapshot, clearSnapshot, displayState } from './startup-snapshot.js';
+import { initUpdates } from './update.js?v=0.1.23';
 
 const D = globalThis.HouseholdDomain;
 const CATEGORIES = D.CATEGORIES.filter(category=>category!=='固定費');
@@ -19,6 +20,58 @@ let busy = false, loginLoading = false, pendingCommand = null, pendingSuccess = 
 let transferPreset = null, imageUrl = null, imageRequest = 0, authEpoch = 0, sessionRole = 'editor';
 let receiptUploads = [];
 let restoreRetry = false, connectionRetry = false;
+let dataPhase = 'loading', activeSession = null, activeSessionStored = false, sessionTimer = null, loginExpectedSession = null;
+const dirtyForms = new WeakSet();
+const staleDraftForms = new WeakSet();
+const syncNotice = document.createElement('div');
+syncNotice.id='data-sync';syncNotice.className='data-sync';syncNotice.setAttribute('role','status');syncNotice.setAttribute('aria-live','polite');syncNotice.hidden=true;
+main.before(syncNotice);
+const authFailure = error => ['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code);
+const storedIdentity = loginConfig => readSession(loginConfig)?.session || null;
+const ownsSession = (value=activeSession, loginConfig=config) => {
+  const current=loginConfig?storedIdentity(loginConfig):null;
+  return validSession(value) && (activeSessionStored?current===value.session:!current||current===value.session);
+};
+const writable = () => !!state && dataPhase==='ready' && sessionRole==='editor' && (transport?.isDemo || ownsSession());
+function rememberSession(value, stored=activeSessionStored) {
+  activeSession=value;activeSessionStored=!!value&&stored;clearTimeout(sessionTimer);
+  if(value)sessionTimer=setTimeout(()=>{if(activeSessionStored&&storedIdentity(config)!==value.session){void followStoredSession();return;}if(validSession(value)){rememberSession(value);return;}void expireSession('ログインの有効期限が切れました。Googleでログインし直してください。');},Math.max(0,Math.min(value.expiresAt-Date.now(),2147483647)));
+}
+function acceptSessionResult(epoch, value=activeSession, loginConfig=config) {
+  if(epoch!==authEpoch)return false;
+  if(value&&!ownsSession(value,loginConfig)){void followStoredSession();return false;}
+  return true;
+}
+function retainSnapshot() {
+  if(!transport?.isDemo && state && dataPhase==='ready' && config && activeSession)void saveSnapshot(config,activeSession,state,sessionRole);
+}
+function updateSyncNotice() {
+  syncNotice.dataset.status=dataPhase==='ready'?'fresh':dataPhase;
+  syncNotice.hidden=!state || transport?.isDemo || dataPhase==='ready';
+  syncNotice.innerHTML=dataPhase==='error'?'<span>最新情報を確認できませんでした。保存した情報を閲覧中です。</span><button id="snapshot-retry" type="button" class="quiet small">再試行</button>':'<span>最新情報を確認中 · 保存した情報を表示しています</span>';
+}
+function refreshEditModels(latest) {
+  // Models can outlive their form when navigating to another page/tab. Keep
+  // future renders tied to the latest ledger, never a dormant snapshot copy.
+  if(editing){const current=latest.expenses.find(row=>row.id===editing.id&&!row.deleted);editing=current?{...current}:null;}
+  if(settingEdit){const current=latest.settings.find(row=>row.id===settingEdit.id);settingEdit=current?{...current}:null;}
+}
+function protectChangedDrafts(previous, latest) {
+  let changed=false;
+  for(const form of document.querySelectorAll('form')){
+    const monthlyTable=form.id==='income-form'?'incomes':form.id==='bill-form'?'bills':null;
+    const reference=monthlyTable?[monthlyTable,form.dataset.targetMonth]:form.id==='expense-form'&&editing?.id?['expenses',editing.id]:form.id==='setting-form'&&settingEdit?.id?['settings',settingEdit.id]:form.dataset.planId?['plans',form.dataset.planId]:form.dataset.receiptId?['receipts',form.dataset.receiptId]:null;
+    if(reference&&(dirtyForms.has(form)||form.contains(document.activeElement))){
+      const [table,id]=reference;
+      const matches=row=>monthlyTable?row.month===id:row.id===id;
+      if(JSON.stringify(previous[table].find(matches))!==JSON.stringify(latest[table].find(matches))){staleDraftForms.add(form);changed=true;}
+    }
+  }
+  // Preserve/guard the original dirty DOM above, then update every model even
+  // when its form is offscreen. A later ordinary render is a fresh edit.
+  refreshEditModels(latest);
+  return changed;
+}
 const materialized = new Set();
 const list = key => (state?.[key] || []).filter(item => !['expenses','receipts'].includes(key) || !item.deleted);
 const canReanalyseReceipt = receipt => sessionRole==='editor' && !receipt.deleted && ['pending','needsReview'].includes(receipt.status) && !receipt.expenseIds.length;
@@ -42,11 +95,12 @@ function sessionSaveNotice(result) {
 function dateLabel(date) { return `${date.slice(5,7)}/${date.slice(8,10)}`; }
 function heading(title,caption) { return `<div class="page-head"><h1>${title}</h1><label class="month-field">表示する月<input id="month" type="month" value="${month}" required></label></div><p class="muted page-caption">${caption}</p>`; }
 function button(action,label,id='',cls='quiet small') { return `<button type="button" class="${cls}" data-action="${action}" data-id="${esc(id)}">${label}</button>`; }
-function formStart(id) { return `<form id="${id}"><div class="form-grid">`; }
+function formStart(id) { return `<form id="${id}"${['income-form','bill-form'].includes(id)?` data-target-month="${esc(month)}"`:''}><div class="form-grid">`; }
 function formEnd(label='保存する',cancel='') { return `</div><div class="form-actions"><button type="submit">${label}</button>${cancel ? button(cancel,'キャンセル') : ''}</div></form>`; }
 
 function renderAuth() {
   closeReceiptReanalysis(true);closeDetail();
+  updateSyncNotice();
   const retry = restoreRetry || connectionRetry;
   document.querySelector('#navigation').hidden = true;
   document.querySelector('#logout').hidden = !loginLoading && !retry;
@@ -155,9 +209,9 @@ function updateReceiptUploads() {
   const progress=document.querySelector('#receipt-upload-progress');
   if(progress)progress.innerHTML=receiptUploadProgress();
   const form=document.querySelector('#receipt-form');if(!form)return;
-  form.querySelector('[type=submit]').disabled=busy||!!pendingCommand||!receiptUploads.some(item=>item.status==='selected');
+  form.querySelector('[type=submit]').disabled=busy||!!pendingCommand||!writable()||!receiptUploads.some(item=>item.status==='selected');
   for(const action of ['receipt-camera','receipt-files','receipt-clear','receipt-retry']){
-    const control=form.querySelector(`[data-action="${action}"]`);control.disabled=busy||!!pendingCommand;
+    const control=form.querySelector(`[data-action="${action}"]`);control.disabled=busy||!!pendingCommand||(action==='receipt-retry'&&!writable());
     if(action==='receipt-clear')control.hidden=!receiptUploads.length;
     if(action==='receipt-retry')control.hidden=!receiptUploads.some(item=>item.status==='failed');
   }
@@ -254,25 +308,42 @@ function renderSettings() {
   return heading('毎月の設定','固定費と積立の予定')+totals+groups+`${settingForm()}<section class="panel"><h2>${esc(month)} の予定</h2><p class="hint">積立の予定をこの月だけ変えたいときに。予定の変更だけでは入金実績は増えません。</p>${plans.length?plans.map(p=>`<form class="monthly-form" data-plan-id="${esc(p.id)}"><h3>${esc(p.name)} <span class="pill">${p.kind==='saving'?'積立':'固定費'}</span></h3><div class="form-grid">${moneyField('plannedAmount','この月の予定金額',p.plannedAmount)}<label>メモ<input name="memo" value="${esc(p.memo)}" maxlength="500"></label></div><div class="form-actions"><button type="submit" class="quiet">この月の予定を保存</button></div></form>`).join(''):'<div class="empty">この月の積立予定はありません。積立を追加すると、今月以降の予定が作られます。</div>'}</section>`;
 }
 
-function render() {
-  closeDetail();
+function formKey(form) { return form.id || (form.dataset.planId?'plan:'+form.dataset.planId:form.dataset.settingId?'saving:'+form.dataset.settingId:''); }
+function render(preserveInteraction=false) {
+  const focused=document.activeElement,scroll={x:window.scrollX,y:window.scrollY};
+  const forms=preserveInteraction?Array.from(main.querySelectorAll('form')).filter(form=>dirtyForms.has(form)||form.contains(focused)||(form.id==='receipt-form'&&receiptUploads.length)).map(form=>[formKey(form),form]):[];
+  const focusKey=preserveInteraction&&main.contains(focused)?{id:focused.id,page:focused.dataset.page,tab:focused.dataset.tab,action:focused.dataset.action,item:focused.dataset.id}:null;
+  const incomeVisible=preserveInteraction&&document.querySelector('#income-edit')?.hidden===false;
+  const details=preserveInteraction?Array.from(main.querySelectorAll('details')).map(el=>el.open):[];
+  if(!preserveInteraction)closeDetail();
   if (!state) return renderAuth();
-  closeImage();
+  if(!preserveInteraction)closeImage();
   document.querySelector('#navigation').hidden=false;
   document.querySelector('#logout').hidden=false;
   document.querySelector('#mode-note').hidden=!transport?.isDemo;
   document.querySelector('#mode-note').textContent=transport?.isDemo?'サンプルを表示中 · 入力は保存されません':' ';
   main.innerHTML=page==='home'?renderHome():page==='register'?renderRegister():page==='history'?renderHistory():renderSettings();
   if(sessionRole==='viewer'){
-    if(page==='register')main.innerHTML=heading('閲覧のみ','このアカウントでは記録の確認ができます。')+'<section class="panel"><p>支出や積立の変更は、編集できるアカウントでログインしてください。</p></section>';
-    main.querySelectorAll('form,[data-action="toggle-income"],[data-action="go-transfer"],[data-action="planned-deposit"],[data-action="custom-deposit"],[data-action="toggle-deposit-skip"],[data-action="funded-withdraw"],[data-action="edit-expense"],[data-action="delete-expense"],[data-action="delete-transfer"],[data-action="edit-setting"],[data-action="toggle-setting"]').forEach(el=>el.hidden=true);
+    if(page==='register'&&!preserveInteraction)main.innerHTML=heading('閲覧のみ','このアカウントでは記録の確認ができます。')+'<section class="panel"><p>支出や積立の変更は、編集できるアカウントでログインしてください。</p></section>';
+    if(!preserveInteraction)main.querySelectorAll('form,[data-action="toggle-income"],[data-action="go-transfer"],[data-action="planned-deposit"],[data-action="custom-deposit"],[data-action="toggle-deposit-skip"],[data-action="funded-withdraw"],[data-action="edit-expense"],[data-action="delete-expense"],[data-action="delete-transfer"],[data-action="edit-setting"],[data-action="toggle-setting"]').forEach(el=>el.hidden=true);
     document.querySelector('#mode-note').hidden=false;document.querySelector('#mode-note').textContent='閲覧のみ';
   }
   document.querySelectorAll('[data-page]').forEach(el=>{if(el.dataset.page===page)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
   updateTransferBalance();
   updateSettingFields();
   updateExpenseCategory();
+  if(preserveInteraction){
+    for(const [key,original] of forms){const replacement=Array.from(main.querySelectorAll('form')).find(form=>formKey(form)===key);if(replacement)replacement.replaceWith(original);}
+    main.querySelectorAll('details').forEach((el,index)=>{if(index<details.length)el.open=details[index];});
+    if(incomeVisible&&document.querySelector('#income-edit'))document.querySelector('#income-edit').hidden=false;
+    // Original form nodes retain values, file selections and selection ranges.
+    if(focused?.isConnected)focused.focus({preventScroll:true});
+    else if(focusKey){const replacement=Array.from(main.querySelectorAll('input,button,select,textarea')).find(el=>focusKey.id?el.id===focusKey.id:focusKey.tab?el.dataset.tab===focusKey.tab:focusKey.action?el.dataset.action===focusKey.action&&el.dataset.id===focusKey.item:false);replacement?.focus({preventScroll:true});}
+    window.scrollTo(scroll.x,scroll.y);
+    updateTransferBalance();
+  }
   setBusy(busy);
+  updateSyncNotice();
 }
 function setBusy(value) {
   busy=value;
@@ -293,9 +364,12 @@ function setBusy(value) {
   updateReceiptUploads();
   const retry=document.querySelector('#receipt-reanalysis-retry');if(retry){retry.hidden=!pendingCommand;retry.disabled=value;}
   const memo=document.querySelector('#receipt-reanalysis-form textarea');if(memo)memo.readOnly=value||!!pendingCommand;
+  if(!writable())document.querySelectorAll('form button[type="submit"],#retry,[data-action="retry-reanalysis"],[data-action="receipt-retry"],[data-action="planned-deposit"],[data-action="toggle-deposit-skip"],[data-action="delete-expense"],[data-action="delete-transfer"],[data-action="delete-receipt"],[data-action="toggle-setting"]').forEach(el=>el.disabled=true);
+  document.querySelectorAll('[data-action="receipt-image"]').forEach(el=>el.disabled=dataPhase!=='ready');
+  document.querySelectorAll('form').forEach(form=>{if(staleDraftForms.has(form))form.querySelectorAll('[type="submit"]').forEach(el=>el.disabled=true);});
 }
 async function mutate(type,payload,onSuccess=()=>render(),exact=null) {
-  if (busy || (pendingCommand && !exact) || sessionRole==='viewer') return;
+  if (busy || (pendingCommand && !exact) || !writable()) return;
   clearMessages();
   const command=exact||{type,payload,operationId:crypto.randomUUID(),expectedRevision:state.revision};
   const epoch=authEpoch;
@@ -303,38 +377,56 @@ async function mutate(type,payload,onSuccess=()=>render(),exact=null) {
   setBusy(true);
   try {
     const response=command.type==='uploadReceipt'?await transport.uploadReceipt({...command.payload,operationId:command.operationId}):await transport.mutate(command);
-    if(epoch!==authEpoch)return;
+    if(!acceptSessionResult(epoch))return;
     state=response.state;
+    refreshEditModels(state);
+    retainSnapshot();
     pendingCommand=null; document.querySelector('#pending').hidden=true;
     const successNotice=onSuccess(response.result);
     message(typeof successNotice==='string'?successNotice:'保存しました。');
   } catch(error) {
-    if(epoch!==authEpoch)return;
-    if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code)){await logout();message('ログインの有効期限が切れました。Googleでログインし直してください。',true);return;}
+    if(!acceptSessionResult(epoch))return;
+    if(authFailure(error)){await expireSession('ログインの有効期限が切れました。Googleでログインし直してください。');return;}
     if(error.code==='CONFLICT'){
-      try{const latest=await transport.load();if(epoch!==authEpoch)return;state=latest;pendingCommand=null;pendingSuccess=null;document.querySelector('#pending').hidden=true;if((page==='home'&&['saveTransfer','setDepositSkipped'].includes(command.type))||command.type==='deleteReceipt')render();message('最新情報を読み込みました。入力内容を確認して、もう一度保存してください。',true);return;}catch{}
+      try{
+        const latest=await transport.load();
+        if(!acceptSessionResult(epoch))return;
+        const changed=protectChangedDrafts(displayState(state),displayState(latest));
+        state=latest;retainSnapshot();pendingCommand=null;pendingSuccess=null;document.querySelector('#pending').hidden=true;
+        if((page==='home'&&['saveTransfer','setDepositSkipped'].includes(command.type))||command.type==='deleteReceipt')render();
+        message(changed?'入力中の記録が別の場所で変更されました。入力は残しています。最新の記録を開き直してから保存してください。':'最新情報を読み込みました。入力内容を確認して、もう一度保存してください。',true);return;
+      }catch(failure){
+        // The conflict reload may finish after logout and a new login. Its
+        // failure belongs to the captured owner just as its success does.
+        if(!acceptSessionResult(epoch))return;
+        if(authFailure(failure)){await logout();return;}
+      }
     }
+    if(!acceptSessionResult(epoch))return;
     const retryable = ['SAVE_FAILED','TIMEOUT','NETWORK','NETWORK_ERROR','TRANSPORT_ERROR','CONNECTION_ERROR'].includes(error.code) || /timeout|timed out|通信|接続|ネットワーク|fetch/i.test(error.message);
     if (retryable) { pendingCommand=command;document.querySelector('#pending').hidden=false; }
     message(error.message||'保存できませんでした。入力を確認してください。',true);
   } finally { if(epoch===authEpoch)setBusy(false); }
 }
-async function ensureMonth() {
-  if (materialized.has(month)||sessionRole==='viewer') return;
+async function ensureMonth(preserveInteraction=false) {
+  if (materialized.has(month)||!writable()) return;
   const captured=month;
   const existing=new Set(list('plans').filter(plan=>plan.month===captured).map(plan=>plan.settingId));
   const missing=list('settings').some(setting=>setting.active&&!existing.has(setting.id));
   if(captured<today().slice(0,7)||!missing){materialized.add(captured);return;}
-  await mutate('materializeMonth',{month:captured},()=>{materialized.add(captured);render();});
+  await mutate('materializeMonth',{month:captured},()=>{materialized.add(captured);render(preserveInteraction);});
 }
 function closeImage(invalidate=true) { if(invalidate)imageRequest++;if(imageUrl){URL.revokeObjectURL(imageUrl);imageUrl=null;} }
 async function loadSession(demo=false, initialState=null) {
   const epoch=authEpoch;
   const loaded=initialState||await transport.load();
-  if(epoch!==authEpoch)return;
+  if(!acceptSessionResult(epoch))return;
+  displayState(loaded);
   state=loaded;
   if(demo)transport.isDemo=true;
+  dataPhase='ready';retainSnapshot();
   render();
+  if(!demo)performance.mark('household:latest-rendered');
   await ensureMonth();
   if(epoch!==authEpoch)return;
   if(!pendingCommand)message('');
@@ -345,15 +437,15 @@ const num = value => Number(value || 0);
 
 document.addEventListener('submit',async event=>{
   const form=event.target;if(!(form instanceof HTMLFormElement))return;
-  event.preventDefault();if(!form.reportValidity() || busy || pendingCommand)return;
+  event.preventDefault();if(!writable() || staleDraftForms.has(form) || !form.reportValidity() || busy || pendingCommand)return;
   const p=getForm(form);
   if(form.id==='expense-form'){
     const plan=list('plans').find(x=>x.id===p.planId);
     const payload={...editing,...p,id:editing?.id||crypto.randomUUID(),quantity:p.quantity?Number(p.quantity):null,amount:num(p.amount),fixed:!!plan||p.fixed==='on',settingId:plan?.settingId||'',planId:plan?.id||'',fundingSettingId:p.fundingSettingId||'',manualEdited:!!editing};
     if(plan&&plan.month!==p.accountingMonth)delete payload.planId;
     await mutate('upsertExpense',payload,()=>{editing=null;render();if(payload.accountingMonth!==month)return `保存しました。計上月は${monthLabel(payload.accountingMonth)}です。`;});
-  } else if(form.id==='income-form')await mutate('saveIncome',{month,amount:num(p.amount)});
-  else if(form.id==='bill-form')await mutate('saveBill',{month,confirmedAmount:num(p.confirmedAmount),memo:p.memo});
+  } else if(form.id==='income-form')await mutate('saveIncome',{month:form.dataset.targetMonth,amount:num(p.amount)});
+  else if(form.id==='bill-form')await mutate('saveBill',{month:form.dataset.targetMonth,confirmedAmount:num(p.confirmedAmount),memo:p.memo});
   else if(form.matches('.custom-deposit-form')){
     const item=summary().savings.find(item=>item.settingId===form.dataset.settingId);
     if(item&&!item.depositSkipped)await depositSavings(item,num(p.amount),p.date);
@@ -370,10 +462,11 @@ document.addEventListener('submit',async event=>{
     await mutate('requestReceiptReanalysis',{receiptId:form.dataset.receiptId,memo:p.memo},()=>{closeReceiptReanalysis(true);render();return '解析待ちにしました。次の定期処理で補足を参考に解析します。';});
   } else if(form.id==='receipt-form')await uploadReceipts();
 });
-document.addEventListener('input',event=>{if(event.target.closest('#transfer-form'))updateTransferBalance();});
+document.addEventListener('input',event=>{if(event.target.form)dirtyForms.add(event.target.form);if(event.target.closest('#transfer-form'))updateTransferBalance();});
 
 document.addEventListener('change',async event=>{
   const el=event.target;
+  if(el.form)dirtyForms.add(el.form);
   if(el.closest('#receipt-form') && el.type==='file'){
     if(busy||pendingCommand)return;
     receiptUploads.push(...Array.from(el.files||[],file=>({file,name:file.name,operationId:crypto.randomUUID(),status:'selected',payload:null,error:''})));
@@ -410,11 +503,16 @@ document.addEventListener('click',async event=>{
   const homeLink=event.target.closest('.brand');if(homeLink&&state){event.preventDefault();if(!busy&&!pendingCommand)switchPage('home');return;}
   const btn=event.target.closest('button');if(!btn)return;
   if(btn.id==='demo-login'){
-    try{clearSession();authEpoch++;sessionRole='editor';transport?.close?.();transport=createDemoTransport();transport.isDemo=true;await loadSession(true);}catch(error){message(error.message,true);}return;
+    try{clearSession();clearSnapshot();rememberSession(null);authEpoch++;sessionRole='editor';transport?.close?.();transport=createDemoTransport();transport.isDemo=true;await loadSession(true);}catch(error){message(error.message,true);}return;
+  }
+  if(btn.id==='snapshot-retry'){
+    if(dataPhase!=='error'||!activeSession||!config)return;
+    authEpoch++;transport?.close?.();transport=createTransport(config);clearMessages();await restoreSavedSession(activeSession,transport,config,authEpoch);return;
   }
   if(btn.id==='restore-retry'){authEpoch++;transport?.close?.();clearMessages();await initializeConfig();return;}
   if(btn.id==='google-login'){
     if(!googleClient||loginLoading||connectionRetry)return;
+    loginExpectedSession=storedIdentity(config);
     // Start the server challenge alongside the popup, retaining the click's user gesture.
     loginPreparation=prepareLogin(transport);
     loginLoading=true;clearMessages();
@@ -479,7 +577,7 @@ document.addEventListener('click',async event=>{
 });
 
 async function uploadReceipts(retry=false) {
-  if(busy||pendingCommand||sessionRole==='viewer')return;
+  if(busy||pendingCommand||!writable())return;
   const items=receiptUploads.filter(item=>item.status===(retry?'failed':'selected'));
   if(!items.length)return;
   const epoch=authEpoch,currentTransport=transport;
@@ -488,29 +586,29 @@ async function uploadReceipts(retry=false) {
   clearMessages();setBusy(true);
   try{
     for(const item of items){
-      if(epoch!==authEpoch)return;
+      if(!acceptSessionResult(epoch))return;
       try{
         if(!item.payload){
           item.status='preparing';updateReceiptUploads();
           const file=item.file;
           if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>8*1024*1024)throw new Error('JPEG・PNG・WebPの画像を8MB以内で選んでください。');
           const bytes=new Uint8Array(await file.arrayBuffer());
-          if(epoch!==authEpoch)return;
+          if(!acceptSessionResult(epoch))return;
           const digest=await crypto.subtle.digest('SHA-256',bytes);
-          if(epoch!==authEpoch)return;
+          if(!acceptSessionResult(epoch))return;
           const imageHash=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
           let raw='';for(let i=0;i<bytes.length;i+=0x8000)raw+=String.fromCharCode(...bytes.subarray(i,i+0x8000));
           item.payload={imageHash,fileName:file.name,mimeType:file.type,base64:btoa(raw),operationId:item.operationId};
         }
         item.status='sending';updateReceiptUploads();
         const response=await currentTransport.uploadReceipt(item.payload);
-        if(epoch!==authEpoch)return;
-        state=response.state;item.status='saved';item.payload=null;item.file=null;
+        if(!acceptSessionResult(epoch))return;
+        state=response.state;refreshEditModels(state);retainSnapshot();item.status='saved';item.payload=null;item.file=null;
       }catch(error){
-        if(epoch!==authEpoch)return;
+        if(!acceptSessionResult(epoch))return;
         item.status='failed';item.error=error.message||'保存結果を確認できませんでした。同じ写真で再送してください。';
         if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code)){
-          await logout();message('ログインの有効期限が切れました。再ログイン後、未保存の写真を選んでください。',true);return;
+          await expireSession('ログインの有効期限が切れました。再ログイン後、未保存の写真を選んでください。');return;
         }
       }
       updateReceiptUploads();
@@ -524,6 +622,7 @@ async function uploadReceipts(retry=false) {
   }finally{if(epoch===authEpoch)setBusy(false);}
 }
 async function showImage(id,trigger) {
+  if(dataPhase!=='ready')return;
   if(!list('receipts').some(receipt=>receipt.id===id))return;
   clearMessages();const epoch=authEpoch;
   const target=document.querySelector('#expense-detail')||document.querySelector('#saved-receipts-content')||main;const request=++imageRequest;
@@ -531,29 +630,48 @@ async function showImage(id,trigger) {
   if(trigger){trigger.disabled=true;trigger.textContent='画像を読み込み中…';}
   target.querySelector('.image-error')?.remove();
   try{
-    const result=await transport.receiptImage(id);if(epoch!==authEpoch||request!==imageRequest||!target.isConnected)return;
+    const result=await transport.receiptImage(id);if(!acceptSessionResult(epoch)||request!==imageRequest||!target.isConnected)return;
     closeImage(false);const parsed=/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(result.dataUrl||'');const base64=result.base64||result.data||parsed?.[2];const mime=result.mimeType||parsed?.[1]||'image/jpeg';
     if(!['image/jpeg','image/png','image/webp'].includes(mime) || typeof base64!=='string')throw new Error('画像データを確認できませんでした。');
     const raw=atob(base64);const bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));imageUrl=URL.createObjectURL(new Blob([bytes],{type:mime}));
     let host=target.querySelector('[data-image-preview],#image-preview');if(!host){host=document.createElement('section');host.dataset.imagePreview='';target.append(host);}host.hidden=false;
     host.innerHTML=`<div class="image-panel"><div class="row-head"><h2>レシート画像</h2>${button('close-image','閉じる')}</div><img class="private-image" src="${esc(imageUrl)}" alt="保存したレシート画像"></div>`;host.scrollIntoView({block:'start'});
   }catch(error){
-    if(epoch!==authEpoch||request!==imageRequest||!target.isConnected)return;
-    if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code)){await logout();message('ログインの有効期限が切れました。Googleでログインし直してください。',true);return;}
+    if(!acceptSessionResult(epoch)||request!==imageRequest||!target.isConnected)return;
+    if(authFailure(error)){await expireSession('ログインの有効期限が切れました。Googleでログインし直してください。');return;}
     const text=error.message||'画像を取得できませんでした。';
     if(target.id==='expense-detail'){const alert=document.createElement('p');alert.className='message error image-error';alert.setAttribute('role','alert');alert.textContent=text;target.append(alert);}
     else message(text,true);
   }finally{if(trigger?.isConnected){trigger.disabled=false;trigger.textContent=label;}}
 }
-async function logout() {
+function resetPrivateSession() {
   receiptUploads=[];
-  clearSession();authEpoch++;closeImage();const previous=transport;
+  rememberSession(null,false);dataPhase='loading';authEpoch++;closeImage();const previous=transport;
   state=null;pendingCommand=null;pendingSuccess=null;editing=null;settingEdit=null;transferPreset=null;materialized.clear();page='register';tab='receipt';busy=false;loginLoading=false;sessionRole='editor';restoreRetry=false;connectionRetry=false;loginPreparation=null;
   main.replaceChildren();document.querySelector('#pending').hidden=true;document.querySelector('#mode-note').hidden=true;clearMessages();
   transport=null;renderAuth();
+  return previous;
+}
+async function followStoredSession() {
+  // Another tab owns the new identity. Discard this tab's old responses and UI,
+  // leaving the new credentials/snapshot and remote session untouched.
+  const previous=resetPrivateSession();previous?.close?.();
+  const epoch=authEpoch;
+  try{await initializeConfig();}catch(error){if(epoch===authEpoch)message(error.message,true);}
+}
+async function logout() {
+  const current=config?storedIdentity(config):null;
+  if(current&&current!==activeSession?.session){await followStoredSession();return;}
+  clearSession();clearSnapshot();const previous=resetPrivateSession();
+  const epoch=authEpoch;
   // Clear the UI/storage immediately even if the revocation request is slow/offline.
   Promise.resolve(previous?.logout?.()).catch(()=>{}).finally(()=>previous?.close?.());
-  try{await initializeConfig();}catch(error){message(error.message,true);}
+  try{await initializeConfig();}catch(error){if(epoch===authEpoch)message(error.message,true);}
+  return epoch;
+}
+async function expireSession(notice) {
+  const signedOutEpoch=await logout();
+  if(signedOutEpoch===authEpoch&&!activeSession&&!state)message(notice,true);
 }
 function updateExpenseCategory() {
   const form=document.querySelector('#expense-form');if(!form)return;
@@ -574,6 +692,33 @@ function prepareLogin(loginTransport) {
   preparation.catch(()=>{});
   return preparation;
 }
+async function restoreSavedSession(saved, loginTransport, loginConfig, epoch) {
+  if(!acceptSessionResult(epoch,saved,loginConfig))return;
+  const preview=!!state;
+  rememberSession(saved,true);dataPhase=preview?'refreshing':'loading';
+  loginLoading=!preview;
+  if(preview){updateSyncNotice();setBusy(false);}else renderAuth();
+  try{
+    const restored=await loginTransport.restore(saved,{load:true});
+    if(!acceptSessionResult(epoch,saved,loginConfig))return;
+    if(!validSession(restored)||!['editor','viewer'].includes(restored.role))throw Object.assign(new Error('Googleでログインし直してください。'),{code:'UNAUTHENTICATED'});
+    displayState(restored.state);
+    const changed=preview&&protectChangedDrafts(displayState(state),displayState(restored.state));
+    sessionRole=restored.role;rememberSession(restored,true);dataPhase='ready';
+    restoreRetry=false;connectionRetry=false;
+    const savedResult=saveSession(loginConfig,restored);
+    if(preview){state=restored.state;retainSnapshot();render(true);performance.mark('household:latest-rendered');await ensureMonth(true);}
+    else await loadSession(false,restored.state);
+    if(epoch!==authEpoch)return;
+    sessionSaveNotice(savedResult);
+    if(changed)message('入力中の記録が別の場所で変更されました。入力は残しています。最新の記録を開き直してから保存してください。',true);
+  }catch(error){
+    if(!acceptSessionResult(epoch,saved,loginConfig))return;
+    if(authFailure(error)){await expireSession('ログインの有効期限が切れました。Googleでログインし直してください。');return;}
+    if(preview){dataPhase='error';updateSyncNotice();setBusy(false);}
+    else {restoreRetry=true;connectionRetry=error.code==='CONNECTION';message(error.message||'家計簿を読み込めませんでした。通信を確認して再読み込みしてください。',true);}
+  }finally{if(epoch===authEpoch)loginLoading=false;}
+}
 async function initializeConfig() {
   const epoch=authEpoch;
   config=null;googleClient=null;loginPreparation=null;loginLoading=false;restoreRetry=false;connectionRetry=false;
@@ -585,20 +730,15 @@ async function initializeConfig() {
   transport=createTransport(config);const loginTransport=transport;const loginConfig=config;
   const saved=readSession(config);
   if(saved){
-    loginLoading=true;renderAuth();
-    try{
-      const restored=await loginTransport.restore(saved,{load:true});
-      if(epoch!==authEpoch)return;
-      sessionRole=restored.role;const savedResult=saveSession(loginConfig,restored);await loadSession(false,restored.state);if(epoch===authEpoch)sessionSaveNotice(savedResult);
-    }catch(error){
-      if(epoch!==authEpoch)return;
-      if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code))clearSession();
-      else restoreRetry=true;
-      connectionRetry=error.code==='CONNECTION';
-      message(error.message||'家計簿を読み込めませんでした。通信を確認して再読み込みしてください。',true);
-    }finally{if(epoch===authEpoch)loginLoading=false;}
+    // Own the pending identity before the asynchronous digest can yield to a
+    // cross-tab login/logout event, even while no preview has been rendered.
+    rememberSession(saved,true);
+    const snapshot=await readSnapshot(config,saved);
+    if(!acceptSessionResult(epoch,saved,loginConfig))return;
+    if(snapshot){state=snapshot.state;sessionRole=snapshot.role;dataPhase='refreshing';rememberSession(saved);render();performance.mark('household:snapshot-rendered');}
+    await restoreSavedSession(saved,loginTransport,loginConfig,epoch);
     if(epoch!==authEpoch||state)return;
-  }
+  }else clearSnapshot();
   renderAuth();
   try{
     await new Promise((resolve,reject)=>{if(globalThis.google?.accounts?.oauth2){resolve();return;}const script=document.createElement('script');script.src='https://accounts.google.com/gsi/client';script.async=true;script.onload=resolve;script.onerror=()=>reject(new Error('Googleログインを読み込めませんでした。通信を確認して再読み込みしてください。'));document.head.append(script);});
@@ -621,17 +761,21 @@ async function initializeConfig() {
           loginResult=await loginTransport.login(result.code,preparation.state);
         }
         if(epoch!==authEpoch)return;
+        if(storedIdentity(loginConfig)!==loginExpectedSession){await followStoredSession();return;}
         sessionRole=loginResult.role||'editor';restoreRetry=false;connectionRetry=false;
-        const savedResult=saveSession(loginConfig,loginResult);await loadSession();if(epoch===authEpoch)sessionSaveNotice(savedResult);
+        const savedResult=saveSession(loginConfig,loginResult);rememberSession(loginResult,savedResult.saved);await loadSession();if(epoch===authEpoch)sessionSaveNotice(savedResult);
       }
-      catch(error){if(epoch!==authEpoch)return;if(['AUTH_REQUIRED','AUTH_FORBIDDEN','UNAUTHENTICATED','UNAUTHORIZED'].includes(error.code))clearSession();else restoreRetry=!!readSession(loginConfig);connectionRetry=error.code==='CONNECTION';message(error.message||'ログインできませんでした。',true);}
+      catch(error){if(epoch!==authEpoch)return;const current=storedIdentity(loginConfig);if((current&&current!==(activeSession?.session||loginExpectedSession))||(activeSessionStored&&current!==activeSession?.session)){await followStoredSession();return;}if(authFailure(error)){clearSession();clearSnapshot();rememberSession(null);}else restoreRetry=!!readSession(loginConfig);connectionRetry=error.code==='CONNECTION';message(error.message||'ログインできませんでした。',true);}
       finally{if(epoch===authEpoch){loginLoading=false;if(!state)renderAuth();}}
     },error_callback:()=>{if(epoch!==authEpoch)return;loginLoading=false;loginPreparation=null;renderAuth();message('ログイン画面が閉じられました。もう一度ログインできます。',true);}});
     renderAuth();
   }catch(error){if(epoch===authEpoch){message(error.message,true);renderAuth();}}
 }
 window.addEventListener('storage',event=>{
-  if((event.key===SESSION_STORAGE_KEY && (!event.newValue || event.newValue==='null')) || event.key===null)logout();
+  if(event.key===null || event.key===SESSION_STORAGE_KEY){
+    const current=config?storedIdentity(config):null;
+    if(current!==activeSession?.session || !current)void followStoredSession();
+  }
 });
 initUpdates({canUpdate:()=>!busy && !loginLoading && !pendingCommand});
 await initializeConfig();
