@@ -4,7 +4,9 @@
 
 上部に全月の有効なneedsReview件数と「確認する」を表示。全画面で維持し、押すと登録のレシート・保存したレシートを開いて最初の確認待ちへfocus/scrollする。移動による追加通信なし。解析待ち・取込済み・保存失敗・削除済みを除き、0件・ログアウトでは非表示。前回データでは「前回の情報では」と区別し、viewerは件数のみ。busy/保存結果不明の移動抑止と最新確認前の保存抑止を維持。GAS・共有Domain・台帳・manifest・非公開接続先の変更なし。
 
-単体174/174、check、build、diff-check成功。Chromeの新receipt-review-info-uiで全画面・追加通信なし・状態除外・2→1→0件・非表示・前回/error表示・busy/pending/viewer強制操作抑止・ログアウト・320/390/768/1280pxの横溢れなしを確認。390/1280pxの画像を確認。既存receipt-reanalysis-uiとstartup-snapshot-uiも成功。再解析テストの古い競合時期待値を0.1.23の草稿保護へ合わせ、変更済み草稿の再保存拒否・開き直し後の最新補足を確認した。Browser plugin not availableのため既存Playwright/Chrome、全て合成データ。ローカルHTTPとChromeは実行環境の通信制限に合わせ同じ権限で起動。独立エージェントレビューは未実施。本番データへの試験入力なし。証跡Temp/household-review-info-qa。公開確認は後記。
+単体174/174、check、build、diff-check成功。Chromeの新receipt-review-info-uiで全画面・追加通信なし・状態除外・2→1→0件・非表示・前回/error表示・busy/pending/viewer強制操作抑止・ログアウト・320/390/768/1280pxの横溢れなしを確認。390/1280pxの画像を確認。既存receipt-reanalysis-uiとstartup-snapshot-uiも成功。再解析テストの古い競合時期待値を0.1.23の草稿保護へ合わせ、変更済み草稿の再保存拒否・開き直し後の最新補足を確認した。Browser plugin not availableのため既存Playwright/Chrome、全て合成データ。ローカルHTTPとChromeは実行環境の通信制限に合わせ同じ権限で起動。独立エージェントレビューは未実施。本番データへの試験入力なし。証跡Temp/household-review-info-qa。
+
+ソースmain8a69a9d、Pages d0a54e8235ad2f1e5bde6dd38c3a5013d44d0e93、Actions39695193700 success。15公開アセットが配信Git blob/改行正規化したdistと一致。公開の未改変HTML/app/CSSで、runtime-config/デモtransportのみ合成データへ差し替え、全画面の件数・追加通信なしの移動・2→1→0件・ログアウト・320/390/768/1280pxを再確認。アプリ例外0件、390/1280pxの画像を保存し390pxを目視確認。証跡Temp/household-review-info-public。本番ログイン・本番データの試験保存は行っていない。物理スマホ/インストール済みPWAの実機表示は未確認。
 
 ## 2026-10-21 起動時の先行表示（0.1.23）
 
