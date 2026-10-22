@@ -1,7 +1,7 @@
 import { createTransport, createDemoTransport } from './transport.js';
 import { SESSION_STORAGE_KEY, validSession, readSession, saveSession, clearSession } from './session.js';
 import { readSnapshot, saveSnapshot, clearSnapshot, displayState } from './startup-snapshot.js';
-import { initUpdates } from './update.js?v=0.1.24';
+import { initUpdates } from './update.js?v=0.1.25';
 
 const D = globalThis.HouseholdDomain;
 const CATEGORIES = D.CATEGORIES.filter(category=>category!=='固定費');
@@ -138,7 +138,7 @@ function plannedDepositRow(item) {
   return `<div class="account-line saving-plan"><span>今月の積立予定</span><div class="saving-plan-actions"><strong>${yen(item.planned)}</strong><button type="button" class="quiet small" data-action="planned-deposit" data-id="${esc(item.settingId)}"${item.depositSkipped||item.planned<=0||saved?' disabled':''}>${saved?'入金済み':'この金額で入金'}</button></div></div>${!currentMonth?`<p class="hint">この月への入金は${esc(month)}-01付で記録します。</p>`:''}<div class="saving-custom-actions"><button type="button" class="quiet small" data-action="custom-deposit" data-id="${esc(item.settingId)}" aria-expanded="false"${item.depositSkipped?' disabled':''}>金額を変更して入金</button><button type="button" class="quiet small" data-action="toggle-deposit-skip" data-id="${esc(item.settingId)}"${item.deposited>0?' disabled title="この月には入金実績があります"':''}>${item.depositSkipped?'入金無しを取り消す':'今月入金無し'}</button></div>${item.depositSkipped?'<p class="hint">この月は入金しないと記録しています。</p>':''}<form class="custom-deposit-form inline-edit" data-setting-id="${esc(item.settingId)}" hidden><p class="hint">入金実績を1件追加します。毎月の予定額は変わりません。</p>${field('amount','入金額（円）',item.planned||'','number','min="1" max="9007199254740991" step="1" inputmode="numeric" required')}<input type="hidden" name="date"><p class="hint">入金日：<span data-deposit-date></span></p><div class="form-actions"><button type="submit">入金する</button>${button('cancel-custom-deposit','キャンセル')}</div></form>`;
 }
 function renderSavingsItem(item) {
-  const paid=item.planned>0&&item.deposited>=item.planned;
+  const paid=item.deposited>0;
   return `<details class="saving-row saving-item"><summary class="saving-item-summary"><div class="saving-item-label"><h3>${esc(item.name)}</h3>${item.depositSkipped?'<span class="pill saving-item-skipped">入金なし</span>':paid?'<span class="pill saving-item-paid">入金済</span>':''}</div><strong class="number saving-item-balance">${yen(item.balance)}</strong></summary><div class="saving-item-body">${plannedDepositRow(item)}<div class="account-line"><span>今月の積立入金</span><strong>${yen(item.deposited)}</strong></div><div class="account-line"><span>今月の取り崩し</span><strong>${yen(item.withdrawn)}</strong></div><p class="hint">積立残金${item.targetAmount?' ／ 目標 '+yen(item.targetAmount):''}</p></div></details>`;
 }
 function renderHome() {

@@ -55,7 +55,7 @@ try{
   await page.setViewportSize({width:390,height:844});await row.screenshot({path:path.join(output,'custom-deposit-input.png')});
   await save(2500);let data=await state();
   assert.equal(data.transfers[0].date,'2026-10-18');assert.equal(data.transfers[0].amount,2500);
-  assert.equal(data.transfers[0].month,'2026-10');assert.equal(await row.locator('.saving-item-paid').count(),0);
+  assert.equal(data.transfers[0].month,'2026-10');assert.equal(await row.locator('summary .saving-item-paid').innerText(),'入金済','A partial deposit counts as deposited');
   const setting=data.settings.find(s=>s.name==='旅行積立');
   assert.equal(setting.plannedAmount,5000);assert.equal(data.plans.find(p=>p.month==='2026-10'&&p.settingId===setting.id).plannedAmount,5000);
   await openCustom();await save(3000);await openRow();
@@ -68,13 +68,17 @@ try{
   await zero.getByRole('button',{name:'金額を変更して入金'}).click();
   const zeroForm=zero.locator('.custom-deposit-form');assert.equal(await zeroForm.locator('[name=amount]').inputValue(),'');
   await zeroForm.locator('[name=amount]').fill('700');await zeroForm.getByRole('button',{name:'入金する',exact:true}).click();await ready();
-  assert.equal((await state()).transfers.at(-1).amount,700);assert.equal(await zero.locator('.saving-item-paid').count(),0);
+  assert.equal((await state()).transfers.at(-1).amount,700);assert.equal(await zero.locator('summary .saving-item-paid').innerText(),'入金済','A deposit counts even with a zero plan');
   for(const [target,amount] of [['2026-11',4321],['2026-09',1234]]){
     await page.locator('#month').fill(target);await ready();await openCustom();
     assert.equal(await form.locator('[data-deposit-date]').innerText(),target+'-01');await save(amount);
     data=await state();assert.equal(data.transfers.at(-1).date,target+'-01');assert.equal(data.transfers.at(-1).month,target);
   }
-  await page.locator('#month').fill('2026-11');await ready();await openCustom();
+  await page.locator('#month').fill('2026-08');await ready();
+  assert.equal(await row.locator('.saving-item-paid').count(),0,'Opening balance and deposits in other months do not count');
+  await page.locator('#month').fill('2026-11');await ready();
+  assert.equal(await row.locator('summary .saving-item-paid').innerText(),'入金済','A future displayed month with a partial deposit has a badge');
+  await openCustom();
   await page.evaluate(()=>{
     const t=__customTest.transport(),original=t.mutate;globalThis.__customCommands=[];
     t.mutate=async command=>{
